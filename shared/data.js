@@ -1,28 +1,61 @@
 // SITE CLASH: Laydown Legends — data bersama server & client.
-// Satuan: meter, detik. Map 3v3 Blitz Site = 140 x 70 m (sesuai SITE_CLASH_Schematic_Denah_Lane.png).
+// Satuan: meter, detik. Map sesuai SITE_CLASH_Schematic_Denah_Lane.png: 3v3 Blitz Site (140x70) & 5v5 Full EPC Project (160x160).
 
 export const TICK_HZ = 30;
 export const SNAP_HZ = 15;
 export const TEAM = { BLUE: 0, RED: 1, NEUTRAL: 2 };
 export const TEAM_NAME = ['BIRU', 'MERAH', 'NETRAL'];
 
-// ---------------------------------------------------------------- MAP
-export const MAP = {
-  w: 140,
-  h: 70,
-  // area yang bisa diinjak (union dari persegi): lane utama + stockyard jungle
+// ---------------------------------------------------------------- LANE HELPERS
+// Lane = polyline dari base BIRU ke base MERAH. s = jarak sepanjang lane (0 = sisi biru).
+export function buildLane(pts) {
+  const segs = [];
+  let L = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [ax, az] = pts[i], [bx, bz] = pts[i + 1];
+    const len = Math.hypot(bx - ax, bz - az);
+    segs.push({ ax, az, bx, bz, len, s0: L, dx: (bx - ax) / len, dz: (bz - az) / len });
+    L += len;
+  }
+  return { pts, segs, len: L };
+}
+export function laneProject(lane, x, z) {
+  let best = { s: 0, d: Infinity };
+  for (const g of lane.segs) {
+    let t = (x - g.ax) * g.dx + (z - g.az) * g.dz;
+    t = t < 0 ? 0 : t > g.len ? g.len : t;
+    const px = g.ax + g.dx * t, pz = g.az + g.dz * t;
+    const d = Math.hypot(x - px, z - pz);
+    if (d < best.d) best = { s: g.s0 + t, d };
+  }
+  return best;
+}
+export function lanePoint(lane, s) {
+  s = s < 0 ? 0 : s > lane.len ? lane.len : s;
+  let g = lane.segs[lane.segs.length - 1];
+  for (const sg of lane.segs) if (s <= sg.s0 + sg.len) { g = sg; break; }
+  const t = s - g.s0;
+  return { x: g.ax + g.dx * t, z: g.az + g.dz * t, dx: g.dx, dz: g.dz };
+}
+// cermin titik (rotasi 180° di tengah map) supaya kedua tim adil
+const mirRect = (W, H) => (r) => ({ ...r, x1: W - r.x2, x2: W - r.x1, z1: H - r.z2, z2: H - r.z1 });
+const mirPt = (W, H) => (p) => ({ ...p, team: p.team === undefined ? undefined : 1 - p.team, x: W - p.x, z: H - p.z });
+
+// ---------------------------------------------------------------- MAPS
+// Mode A: 3v3 BLITZ SITE (140 x 70 m) — 1 lane utama + Stockyard jungle
+const BLITZ = {
+  id: 'blitz', name: '3v3 Blitz Site', w: 140, h: 70,
   walk: [
     { x1: 1, z1: 42, x2: 139, z2: 58 },
-    { x1: 22, z1: 6, x2: 118, z2: 42 },
+    { x1: 22, z1: 6, x2: 118, z2: 44 }, // overlap 2 m dengan lane supaya perbatasan bisa dilewati
   ],
-  // kontainer = dinding (x1,z1,x2,z2). color: oranye/biru/hijau seperti concept art
+  // kontainer = dinding. c: warna kontainer seperti concept art
   walls: [
     { x1: 32, z1: 36, x2: 54, z2: 41, c: 'orange', stack: 2 },
     { x1: 87, z1: 36, x2: 109, z2: 41, c: 'blue', stack: 2 },
     { x1: 45, z1: 18, x2: 57, z2: 23, c: 'green', stack: 1 },
     { x1: 83, z1: 18, x2: 95, z2: 23, c: 'green', stack: 1 },
   ],
-  // ilalang liar = Stealth Bush
   bushes: [
     { x1: 38, z1: 24, x2: 43, z2: 32 },
     { x1: 107, z1: 24, x2: 112, z2: 32 },
@@ -31,25 +64,91 @@ export const MAP = {
     { x1: 60, z1: 55, x2: 66, z2: 58 },
     { x1: 74, z1: 42, x2: 80, z2: 45 },
   ],
-  bossPit: { x: 70, z: 18, r: 6 },
-  laneZ: 50,
-  fountain: [
-    { x1: 1, z1: 43, x2: 7, z2: 57 },
-    { x1: 133, z1: 43, x2: 139, z2: 57 },
-  ],
+  pits: [{ x: 70, z: 18, r: 6, type: 'switch' }], // Apex Cat, berganti Cerberus setelah menit 4
+  lanes: { mid: [[4, 50], [136, 50]] },
+  laneWidth: 16,
+  fountain: [{ x1: 1, z1: 43, x2: 7, z2: 57 }, { x1: 133, z1: 43, x2: 139, z2: 57 }],
   spawn: [{ x: 4, z: 50 }, { x: 136, z: 50 }],
   structures: [
-    // team, type, x, z
     { team: 0, type: 'base', x: 12, z: 50 },
-    { team: 0, type: 'lightning', x: 24, z: 50 },
-    { team: 0, type: 'water', x: 46, z: 50 },
-    { team: 1, type: 'water', x: 94, z: 50 },
-    { team: 1, type: 'lightning', x: 116, z: 50 },
+    { team: 0, type: 'lightning', x: 24, z: 50, lane: 'mid', tier: 3 },
+    { team: 0, type: 'water', x: 46, z: 50, lane: 'mid', tier: 1 },
+    { team: 1, type: 'water', x: 94, z: 50, lane: 'mid', tier: 1 },
+    { team: 1, type: 'lightning', x: 116, z: 50, lane: 'mid', tier: 3 },
     { team: 1, type: 'base', x: 128, z: 50 },
   ],
-  // titik jalan bot ke jungle (lewat celah di antara kontainer)
-  jungleGate: [{ x: 70, z: 44 }, { x: 70, z: 32 }],
+  gate: { x: 70, zIn: 38, zOut: 45, split: 42 }, // celah lane <-> stockyard (untuk bot)
+  wave: { first: 12, every: 26, list: ['cat', 'cat', 'cat', 'dog', 'dog'] },
+  overtime: 600,
+  ahead: [1, 0],
+  botLanes: ['mid', 'mid', 'mid'],
 };
+
+// Mode B: 5v5 FULL EPC PROJECT (160 x 160 m) — Top: Workshop Fabrikasi, Mid: Jalan Utama Laydown, Bottom: Tumpukan Kontainer.
+// Koordinat dari SITE_CLASH_Schematic_Denah_Lane.png (z = 160 - y gambar). Base BIRU kiri-bawah layar, MERAH kanan-atas.
+const FW = 160, FH = 160;
+const fullWallsHalf = [
+  { x1: 46, z1: 30, x2: 64, z2: 36, c: 'green', stack: 1 },
+  { x1: 28, z1: 42, x2: 44, z2: 48, c: 'orange', stack: 2 },
+  { x1: 28, z1: 50, x2: 34, z2: 64, c: 'blue', stack: 2 },
+  { x1: 66, z1: 36, x2: 72, z2: 52, c: 'blue', stack: 2 },
+  { x1: 48, z1: 66, x2: 62, z2: 72, c: 'orange', stack: 2 },
+  { x1: 30, z1: 80, x2: 36, z2: 96, c: 'green', stack: 1 },
+  { x1: 50, z1: 84, x2: 64, z2: 90, c: 'orange', stack: 2 },
+];
+const fullBushHalf = [
+  { x1: 68, z1: 22, x2: 80, z2: 27 },
+  { x1: 22, z1: 56, x2: 27, z2: 68 },
+  { x1: 22, z1: 80, x2: 27, z2: 92 },
+  { x1: 44, z1: 96, x2: 50, z2: 102 },
+  { x1: 68, z1: 98, x2: 78, z2: 104 },
+  { x1: 36, z1: 70, x2: 42, z2: 76 },
+];
+const fullStructBlue = [
+  { team: 0, type: 'base', x: 22, z: 138 },
+  { team: 0, type: 'lightning', x: 15, z: 126, lane: 'top', tier: 3 },
+  { team: 0, type: 'water', x: 15, z: 98, lane: 'top', tier: 2 },
+  { team: 0, type: 'water', x: 15, z: 55, lane: 'top', tier: 1 },
+  { team: 0, type: 'lightning', x: 34, z: 126, lane: 'mid', tier: 3 },
+  { team: 0, type: 'water', x: 50, z: 110, lane: 'mid', tier: 2 },
+  { team: 0, type: 'water', x: 68, z: 92, lane: 'mid', tier: 1 },
+  { team: 0, type: 'lightning', x: 34, z: 145, lane: 'bot', tier: 3 },
+  { team: 0, type: 'water', x: 62, z: 145, lane: 'bot', tier: 2 },
+  { team: 0, type: 'water', x: 105, z: 145, lane: 'bot', tier: 1 },
+];
+const LANE_SWAP = { top: 'bot', bot: 'top', mid: 'mid' };
+const FULL = {
+  id: 'full', name: '5v5 Full EPC Project', w: FW, h: FH,
+  walk: [{ x1: 6, z1: 6, x2: 154, z2: 154 }, { x1: 2, z1: 144, x2: 16, z2: 158 }, { x1: 144, z1: 2, x2: 158, z2: 16 }],
+  walls: [...fullWallsHalf, ...fullWallsHalf.map(mirRect(FW, FH))],
+  bushes: [...fullBushHalf, ...fullBushHalf.map(mirRect(FW, FH))],
+  pits: [
+    { x: 54, z: 54, r: 6.5, type: 'apexcat', spawnAt: 90, respawn: 120 }, // Turtle
+    { x: 106, z: 106, r: 7, type: 'cerberus', spawnAt: 360, respawn: 180 }, // Lord
+  ],
+  // lane top tim biru = sisi kiri + atas layar biru; cerminannya jadi lane bot tim merah
+  lanes: {
+    top: [[15, 131], [15, 15], [131, 15]],
+    mid: [[28, 132], [132, 28]],
+    bot: [[29, 145], [145, 145], [145, 29]],
+  },
+  laneWidth: 14,
+  fountain: [{ x1: 2, z1: 144, x2: 14, z2: 158 }, { x1: 146, z1: 2, x2: 158, z2: 16 }],
+  spawn: [{ x: 8, z: 152 }, { x: 152, z: 8 }],
+  structures: [...fullStructBlue, ...fullStructBlue.map((st) => ({ ...mirPt(FW, FH)(st), lane: st.lane && LANE_SWAP[st.lane] }))],
+  wave: { first: 15, every: 30, list: ['cat', 'cat', 'dog', 'dog'] },
+  overtime: 900,
+  ahead: [0.7, -0.7],
+  botLanes: ['top', 'mid', 'bot', 'bot', 'mid'],
+  big: true,
+};
+
+export const MAPS = { blitz: BLITZ, full: FULL };
+for (const m of Object.values(MAPS)) {
+  m.laneData = {};
+  for (const [k, pts] of Object.entries(m.lanes)) m.laneData[k] = buildLane(pts);
+}
+export const modeForSize = (n) => (n >= 4 ? 'full' : 'blitz');
 
 export const STRUCT = {
   water: { name: 'Toren Air', hp: 3300, r: 1.8, range: 9, dmg: 170, interval: 1.1, armor: 40, mres: 40 },
@@ -68,7 +167,7 @@ export const BOSS = {
   cerberus: { name: 'Cerberus of the Yard', hp: 11000, dmg: 190, range: 3.2, interval: 1.4, ms: 5.5, r: 2.2, armor: 55, mres: 45, gold: 220, xp: 320, spawnAt: 240, respawn: 120 },
 };
 
-export const WAVE = { first: 12, every: 26, siegeEvery: 3 };
+export const WAVE = { siegeEvery: 3 };
 export const START_GOLD = 300;
 export const PASSIVE_GOLD = 2.4; // per detik
 export const MAX_LEVEL = 15;

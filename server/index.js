@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Game, DT } from './game.js';
-import { HEROES, PLAYABLE, SNAP_HZ, TICK_HZ } from '../shared/data.js';
+import { HEROES, PLAYABLE, SNAP_HZ, TICK_HZ, modeForSize } from '../shared/data.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = +(process.env.PORT || 3000);
@@ -88,8 +88,8 @@ function startGame() {
       used.add(hero);
       slots.push({ pid: p.token, name: p.name, team, hero, bot: false });
     }
-    const botNames = ['Bot Pak Mandor', 'Bot Bu Drafter', 'Bot Mas QC', 'Bot Pak Rigger', 'Bot Mbak HSE', 'Bot Bang Surveyor'];
-    let i = team * 3;
+    const botNames = ['Bot Pak Mandor', 'Bot Bu Drafter', 'Bot Mas QC', 'Bot Pak Rigger', 'Bot Mbak HSE', 'Bot Bang Surveyor', 'Bot Pak Welder', 'Bot Bu Estimator', 'Bot Mas Rigger', 'Bot Mbak DC'];
+    let i = team * 5;
     while (slots.filter((s) => s.team === team).length < room.size) {
       const free = PLAYABLE.filter((k) => !used.has(k));
       const hero = free[Math.floor(Math.random() * free.length)];
@@ -97,13 +97,13 @@ function startGame() {
       slots.push({ pid: null, name: botNames[i++ % botNames.length], team, hero, bot: true });
     }
   }
-  room.game = new Game(slots);
+  room.game = new Game(slots, { mode: modeForSize(room.size) });
   room.heroOf.clear();
   for (const h of room.game.heroes) if (h.pid) room.heroOf.set(h.pid, h.id);
   room.state = 'game';
   for (const [ws, c] of room.clients) sendGameStart(ws, c);
   pushLobby();
-  console.log(`[game] mulai ${room.size}v${room.size}:`, slots.map((s) => `${s.name}(${s.hero}${s.bot ? ',bot' : ''})`).join(', '));
+  console.log(`[game] mulai ${room.size}v${room.size} (${room.game.map.name}):`, slots.map((s) => `${s.name}(${s.hero}${s.bot ? ',bot' : ''})`).join(', '));
 }
 
 function sendGameStart(ws, c) {
@@ -113,7 +113,7 @@ function sendGameStart(ws, c) {
   c.heroId = h ? h.id : 0;
   c.viewTeam = h ? h.team : 2;
   if (h) h.bot = false;
-  send(ws, { t: 'gamestart', heroId: c.heroId, team: c.viewTeam, size: room.size, sb: g.scoreboard() });
+  send(ws, { t: 'gamestart', heroId: c.heroId, team: c.viewTeam, size: room.size, mode: g.mode, sb: g.scoreboard() });
 }
 
 function endGame() {
@@ -156,7 +156,7 @@ wss.on('connection', (ws, req) => {
     switch (m.t) {
       case 'team': if (room.state === 'lobby' && [0, 1, 2].includes(m.team)) { c.team = m.team; pushLobby(); } break;
       case 'hero': if (room.state === 'lobby' && HEROES[m.hero]) { c.hero = m.hero; pushLobby(); } break;
-      case 'size': if (room.state === 'lobby' && hostClient() === c && [1, 2, 3].includes(m.size)) { room.size = m.size; pushLobby(); } break;
+      case 'size': if (room.state === 'lobby' && hostClient() === c && [1, 2, 3, 5].includes(m.size)) { room.size = m.size; pushLobby(); } break;
       case 'start': if (room.state === 'lobby' && hostClient() === c) startGame(); break;
       case 'chat': broadcast({ t: 'chat', n: c.name, tm: c.team, msg: String(m.msg || '').slice(0, 120) }); break;
       case 'surrender': if (g && c.heroId && hostClient() === c && !g.over) { const h = g.ents.get(c.heroId); g.over = { winner: 1 - h.team, time: g.time }; g.ev({ t: 'over', winner: 1 - h.team }); } break;

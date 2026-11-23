@@ -1,7 +1,7 @@
 // SITE CLASH — simulasi pertandingan (server-authoritative).
 import {
-  TICK_HZ, MAP, STRUCT, MINION, BOSS, WAVE, HEROES, ITEMS, START_GOLD, PASSIVE_GOLD,
-  MAX_LEVEL, xpForLevel, respawnTime, ULT_LEVEL, S2_LEVEL, itemCost,
+  TICK_HZ, MAPS, STRUCT, MINION, BOSS, WAVE, HEROES, ITEMS, START_GOLD, PASSIVE_GOLD,
+  MAX_LEVEL, xpForLevel, respawnTime, ULT_LEVEL, S2_LEVEL, itemCost, laneProject, lanePoint,
 } from '../shared/data.js';
 import { botThink } from './bot.js';
 
@@ -9,22 +9,19 @@ export const DT = 1 / TICK_HZ;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 export const d2 = (a, b) => { const dx = a.x - b.x, dz = a.z - b.z; return dx * dx + dz * dz; };
 export const dist = (a, b) => Math.sqrt(d2(a, b));
-const inRectRaw = (x, z, R) => x >= R.x1 && x <= R.x2 && z >= R.z1 && z <= R.z2;
-// jungle dibuat overlap 2 m dengan lane supaya perbatasan bisa dilewati
-const WALK = MAP.walk.map((w, i) => (i === 1 ? { ...w, z2: 44 } : w));
+export const inRectRaw = (x, z, R) => x >= R.x1 && x <= R.x2 && z >= R.z1 && z <= R.z2;
 
-export function free(x, z, r) {
+export function mapFree(M, x, z, r) {
   let ok = false;
-  for (const w of WALK) if (x >= w.x1 + r && x <= w.x2 - r && z >= w.z1 + r && z <= w.z2 - r) { ok = true; break; }
+  for (const w of M.walk) if (x >= w.x1 + r && x <= w.x2 - r && z >= w.z1 + r && z <= w.z2 - r) { ok = true; break; }
   if (!ok) return false;
-  for (const w of MAP.walls) if (x > w.x1 - r && x < w.x2 + r && z > w.z1 - r && z < w.z2 + r) return false;
+  for (const w of M.walls) if (x > w.x1 - r && x < w.x2 + r && z > w.z1 - r && z < w.z2 + r) return false;
   return true;
 }
-export function bushAt(x, z) {
-  for (let i = 0; i < MAP.bushes.length; i++) if (inRectRaw(x, z, MAP.bushes[i])) return i;
+export function bushAt(M, x, z) {
+  for (let i = 0; i < M.bushes.length; i++) if (inRectRaw(x, z, M.bushes[i])) return i;
   return -1;
 }
-export const inFountain = (u, team) => inRectRaw(u.x, u.z, MAP.fountain[team]);
 function segDist2(px, pz, ax, az, bx, bz) {
   const vx = bx - ax, vz = bz - az, wx = px - ax, wz = pz - az;
   const L = vx * vx + vz * vz;
@@ -54,19 +51,25 @@ export class Game {
     this.score = [0, 0];
     this.over = null;
     this.waveN = 0;
-    this.nextWave = WAVE.first;
-    this.bossNext = BOSS.apexcat.spawnAt;
-    this.bossId = 0;
+    this.mode = MAPS[opts.mode] ? opts.mode : 'blitz';
+    this.map = MAPS[this.mode];
+    this.nextWave = this.map.wave.first;
+    this.pits = this.map.pits.map((p) => ({ ...p, bossId: 0, next: p.type === 'switch' ? BOSS.apexcat.spawnAt : (p.spawnAt ?? BOSS[p.type].spawnAt) }));
     this.heroes = [];
     this.feed = [];
     this.opts = opts;
-    for (const st of MAP.structures) this.spawnStructure(st);
+    for (const st of this.map.structures) this.spawnStructure(st);
     for (const s of slots) this.spawnHero(s);
     this.ev({ t: 'start' });
     this.otAnnounced = false;
   }
 
   ev(e) { this.events.push(e); }
+  free(x, z, r) { return mapFree(this.map, x, z, r); }
+  inFountain(u, team) { return inRectRaw(u.x, u.z, this.map.fountain[team]); }
+  lane(key) { return this.map.laneData[key]; }
+  // boss netral yang sedang hidup
+  bosses() { const out = []; for (const p of this.pits) { const b = p.bossId && this.ents.get(p.bossId); if (b && !b.dead) out.push(b); } return out; }
   add(e) { e.id = this.nextId++; this.ents.set(e.id, e); return e; }
   at(delay, fn) { this.pending.push({ at: this.time + delay, fn }); }
 
@@ -75,20 +78,28 @@ export class Game {
     const S = STRUCT[st.type];
     const u = this.add({ kind: 'struct', type: st.type, team: st.team, x: st.x, z: st.z, r: S.r, hp: S.hp, maxHp: S.hp, atkCd: 2, target: 0, armor: S.armor, mres: S.mres, ramp: { id: 0, n: 0 } });
     initStatus(u);
-    u.armed = st.type === 'water'; // lightning/base menyala saat struktur di depannya hancur
+    // tier 1 outer: aktif & bisa diserang. tier 2 inner: menembak, kebal sampai outer runtuh.
+    // tier 3 penangkal petir: tidur & kebal sampai turret di depannya runtuh. base: sampai salah satu penangkal petir runtuh.
+    u.lane = st.lane || null;
+    u.tier = st.tier || 4;
+    if (u.lane) u.laneS = laneProject(this.lane(u.lane), u.x, u.z).s;
+    u.armed = u.tier <= 2;
+    u.vuln = u.tier === 1;
   }
 
   spawnHero(s) {
     const H = HEROES[s.hero];
-    const sp = MAP.spawn[s.team];
+    const sp = this.map.spawn[s.team];
+    const idx = this.heroes.filter((o) => o.team === s.team).length;
+    const ang = idx * 1.2566 + (s.team ? Math.PI : 0);
     const h = this.add({
       kind: 'hero', hero: s.hero, H, name: s.name, team: s.team, pid: s.pid, bot: !!s.bot,
-      x: sp.x, z: sp.z + (this.heroes.filter((o) => o.team === s.team).length - 1) * 2.2, r: 0.55, f: s.team === 0 ? Math.PI / 2 : -Math.PI / 2,
+      x: sp.x + (idx ? Math.cos(ang) * 2.2 : 0), z: sp.z + (idx ? Math.sin(ang) * 2.2 : 0), r: 0.55, f: s.team === 0 ? Math.PI / 2 : -Math.PI / 2,
       lvl: 1, xp: 0, gold: START_GOLD, items: [], dead: false, respawnAt: 0,
       cds: [0, 0, 0], atkCd: 0, kills: 0, deaths: 0, assists: 0,
       input: { mx: 0, mz: 0, atk: false }, casts: [], history: [], histT: 0,
       recallUntil: 0, nextAtkBonus: 0, aftershock: false, trafoCd: 0, meshShield: 0, meshNext: 0, harnessReady: 0,
-      s1RecastUntil: 0, brain: {}, moving: false, goldEarned: 0,
+      s1RecastUntil: 0, brain: { lane: this.map.botLanes[idx % this.map.botLanes.length] }, moving: false, goldEarned: 0,
     });
     initStatus(h);
     this.calcStats(h);
@@ -100,41 +111,60 @@ export class Game {
   spawnWave() {
     this.waveN++;
     const siege = this.waveN % WAVE.siegeEvery === 0;
-    const list = ['cat', 'cat', 'cat', 'dog', 'dog'];
+    const list = this.map.wave.list;
     const scale = 1 + Math.min(1.4, this.time / 60 * 0.065);
-    for (const team of [0, 1]) {
-      const dir = team === 0 ? 1 : -1;
-      // super wave: bila Penangkal Petir lawan sudah runtuh, tiap gelombang membawa Mastiff
-      let enemyLightningDown = true;
-      for (const e of this.ents.values()) if (e.kind === 'struct' && e.team !== team && e.type === 'lightning' && !e.dead) enemyLightningDown = false;
-      const wave = siege || enemyLightningDown ? [...list, 'mastiff'] : list;
-      wave.forEach((type, i) => {
-        const M = MINION[type];
-        const back = type === 'cat' ? 0 : type === 'dog' ? 1.8 : 3.2;
-        const off = ((i % 3) - 1) * 1.4;
-        const u = this.add({
-          kind: 'minion', type, team, x: (team === 0 ? 21 : 119) - dir * back, z: MAP.laneZ + off, r: M.r,
-          hp: Math.round(M.hp * scale), maxHp: Math.round(M.hp * scale), dmg: M.dmg * scale, armor: M.armor, mres: M.mres,
-          atkCd: 0.3 + Math.random() * 0.4, target: 0, laneOff: off, f: team === 0 ? Math.PI / 2 : -Math.PI / 2,
+    const startS = this.mode === 'blitz' ? 17 : 4;
+    for (const [key, lane] of Object.entries(this.map.laneData)) {
+      for (const team of [0, 1]) {
+        const dir = team === 0 ? 1 : -1;
+        // super wave: bila Penangkal Petir lawan di lane ini sudah runtuh, tiap gelombang membawa Mastiff
+        let enemyLightningDown = true;
+        for (const e of this.ents.values()) if (e.kind === 'struct' && e.team !== team && e.type === 'lightning' && e.lane === key && !e.dead) enemyLightningDown = false;
+        const wave = siege || enemyLightningDown ? [...list, 'mastiff'] : list;
+        const s0 = team === 0 ? startS : lane.len - startS;
+        wave.forEach((type, i) => {
+          const M = MINION[type];
+          const back = type === 'cat' ? 0 : type === 'dog' ? 1.8 : 3.2;
+          const off = ((i % 3) - 1) * 1.4;
+          const p = lanePoint(lane, s0 - dir * back);
+          const u = this.add({
+            kind: 'minion', type, team, x: p.x - p.dz * off, z: p.z + p.dx * off, r: M.r, lane: key,
+            hp: Math.round(M.hp * scale), maxHp: Math.round(M.hp * scale), dmg: M.dmg * scale, armor: M.armor, mres: M.mres,
+            atkCd: 0.3 + Math.random() * 0.4, target: 0, laneOff: off, f: Math.atan2(p.dx * dir, p.dz * dir),
+          });
+          initStatus(u);
         });
-        initStatus(u);
-      });
+      }
     }
   }
 
-  spawnBoss() {
-    const type = this.time >= BOSS.cerberus.spawnAt ? 'cerberus' : 'apexcat';
-    const B = BOSS[type];
-    const scale = 1 + this.time / 60 * 0.05;
-    const u = this.add({ kind: 'boss', type, team: 2, x: MAP.bossPit.x, z: MAP.bossPit.z, r: B.r, hp: Math.round(B.hp * scale), maxHp: Math.round(B.hp * scale), dmg: B.dmg * scale, armor: B.armor, mres: B.mres, atkCd: 0, target: 0, abilityCd: 5, f: 0, home: { x: MAP.bossPit.x, z: MAP.bossPit.z } });
-    initStatus(u);
-    this.bossId = u.id;
-    this.ev({ t: 'boss', k: type, msg: `${B.name} muncul di Stockyard!` });
+  // ikuti lane dengan titik lookahead (belokan lane jadi mulus)
+  followLane(u, ms, laneKey) {
+    const lane = this.lane(laneKey);
+    const dir = u.team === 0 ? 1 : -1;
+    const pr = laneProject(lane, u.x, u.z);
+    const p = lanePoint(lane, pr.s + dir * 5);
+    const off = u.laneOff || 0;
+    this.moveToward(u, p.x - p.dz * off, p.z + p.dx * off, ms);
   }
 
-  spawnAllyCerberus(team) {
+  spawnBoss(pit) {
+    const type = pit.type === 'switch' ? (this.time >= BOSS.cerberus.spawnAt ? 'cerberus' : 'apexcat') : pit.type;
+    const B = BOSS[type];
+    const scale = 1 + this.time / 60 * 0.05;
+    const u = this.add({ kind: 'boss', type, team: 2, x: pit.x, z: pit.z, r: B.r, hp: Math.round(B.hp * scale), maxHp: Math.round(B.hp * scale), dmg: B.dmg * scale, armor: B.armor, mres: B.mres, atkCd: 0, target: 0, abilityCd: 5, f: 0, home: { x: pit.x, z: pit.z }, pit });
+    initStatus(u);
+    pit.bossId = u.id;
+    const where = this.mode === 'blitz' ? 'Stockyard' : type === 'apexcat' ? 'Turtle Pit' : 'Lord Pit';
+    this.ev({ t: 'boss', k: type, msg: `${B.name} muncul di ${where}!` });
+  }
+
+  spawnAllyCerberus(team, pit) {
     const B = BOSS.cerberus;
-    const u = this.add({ kind: 'boss', type: 'cerberus', ally: true, team, x: MAP.bossPit.x, z: MAP.bossPit.z, r: 1.8, hp: 6500, maxHp: 6500, dmg: 210, armor: B.armor, mres: B.mres, atkCd: 0, target: 0, abilityCd: 6, f: 0, expire: this.time + 75, wp: 0 });
+    // dorong lane terdekat dari pit
+    let lane = 'mid', bd = Infinity;
+    for (const [k, L] of Object.entries(this.map.laneData)) { const d = laneProject(L, pit.x, pit.z).d; if (d < bd) { bd = d; lane = k; } }
+    const u = this.add({ kind: 'boss', type: 'cerberus', ally: true, team, x: pit.x, z: pit.z, r: 1.8, hp: 6500, maxHp: 6500, dmg: 210, armor: B.armor, mres: B.mres, atkCd: 0, target: 0, abilityCd: 6, f: 0, expire: this.time + 75, wp: 0, lane, laneOff: 0 });
     initStatus(u);
   }
 
@@ -200,7 +230,7 @@ export class Game {
   damage(src, t, amount, type, o = {}) {
     if (!t || t.hp <= 0 || t.dead) return 0;
     const now = this.time;
-    if (t.kind === 'struct' && !t.armed && t.type !== 'water') { if (src.kind === 'hero') this.ev({ t: 'immune', id: t.id }); return 0; }
+    if (t.kind === 'struct' && !t.vuln) { if (src.kind === 'hero') this.ev({ t: 'immune', id: t.id }); return 0; }
     if (t.untargetable && t.untargetable > now) return 0;
     let amt = amount;
     if (type !== 'true') {
@@ -219,7 +249,7 @@ export class Game {
       }
       if (src.siege || (src.kind === 'minion' && src.type === 'mastiff') || (src.kind === 'boss' && src.ally)) amt *= 2;
     }
-    if (t.kind === 'struct' && now > 600) amt *= 1 + (now - 600) / 240; // overtime: struktur makin rapuh
+    if (t.kind === 'struct' && now > this.map.overtime) amt *= 1 + (now - this.map.overtime) / 240; // overtime: struktur makin rapuh
     if (src.kind === 'struct' && t.kind === 'minion') amt *= 0.5; // turret mengikis minion pelan, beri waktu push
     // shield
     let shieldMult = 1;
@@ -336,11 +366,10 @@ export class Game {
     } else if (t.kind === 'struct') {
       const enemy = 1 - t.team;
       for (const h of this.heroes) if (h.team === enemy) { this.giveGold(h, 130, true); this.giveXp(h, 60); }
-      const label = STRUCT[t.type].name;
-      this.ev({ t: 'struct', team: t.team, k: t.type, msg: `${label} tim ${t.team === 0 ? 'BIRU' : 'MERAH'} hancur!` });
-      if (t.type === 'water') this.armNext(t.team, 'lightning');
-      else if (t.type === 'lightning') this.armNext(t.team, 'base');
-      else if (t.type === 'base') {
+      const label = STRUCT[t.type].name + (t.lane && this.mode !== 'blitz' ? ` (${t.lane.toUpperCase()})` : '');
+      this.ev({ t: 'struct', team: t.team, k: t.type, lane: t.lane, msg: `${label} tim ${t.team === 0 ? 'BIRU' : 'MERAH'} hancur!` });
+      if (t.type !== 'base') this.structDown(t);
+      else {
         this.over = { winner: enemy, time: now };
         this.ev({ t: 'over', winner: enemy });
       }
@@ -352,19 +381,30 @@ export class Game {
           this.giveGold(h, B.gold, true); this.giveXp(h, B.xp);
           if (t.type === 'apexcat' && !h.dead) this.shield(h, 450 + 30 * h.lvl, 60);
         }
-        if (t.type === 'cerberus') this.spawnAllyCerberus(team);
+        if (t.type === 'cerberus') this.spawnAllyCerberus(team, t.pit || t);
         this.ev({ t: 'bosskill', k: t.type, team, msg: t.type === 'apexcat' ? `Tim ${team === 0 ? 'BIRU' : 'MERAH'} mengalahkan Apex Alley Cat — Shield Debu Beton aktif!` : `Tim ${team === 0 ? 'BIRU' : 'MERAH'} menjinakkan Cerberus — ia ikut push lane!` });
       }
-      this.bossId = 0;
-      this.bossNext = now + B.respawn;
+      if (t.pit) { t.pit.bossId = 0; t.pit.next = now + (t.pit.respawn ?? B.respawn); }
     }
   }
 
-  armNext(team, type) {
-    for (const e of this.ents.values()) if (e.kind === 'struct' && e.team === team && e.type === type && !e.dead) {
-      e.armed = true;
-      this.ev({ t: 'arm', id: e.id, k: type, x: e.x, z: e.z });
+  // buka struktur berikutnya di lane yang sama; penangkal petir runtuh -> base terbuka
+  structDown(t) {
+    const arm = (e) => {
+      const wasArmed = e.armed;
+      e.armed = true; e.vuln = true;
+      if (!wasArmed) this.ev({ t: 'arm', id: e.id, k: e.type, x: e.x, z: e.z });
+    };
+    if (t.tier === 3) {
+      for (const e of this.ents.values()) if (e.kind === 'struct' && e.team === t.team && e.type === 'base' && !e.dead) arm(e);
+      return;
     }
+    let next = null;
+    for (const e of this.ents.values()) {
+      if (e.kind !== 'struct' || e.team !== t.team || e.lane !== t.lane || e.dead || e.tier <= t.tier) continue;
+      if (!next || e.tier < next.tier) next = e;
+    }
+    if (next) arm(next);
   }
 
   lastHeroAttacker(t) {
@@ -397,9 +437,9 @@ export class Game {
   tryMove(u, dx, dz) {
     if (dx === 0 && dz === 0) return false;
     const nx = u.x + dx, nz = u.z + dz;
-    if (free(nx, nz, u.r)) { u.x = nx; u.z = nz; return true; }
-    if (dx !== 0 && free(nx, u.z, u.r)) { u.x = nx; return true; }
-    if (dz !== 0 && free(u.x, nz, u.r)) { u.z = nz; return true; }
+    if (this.free(nx, nz, u.r)) { u.x = nx; u.z = nz; return true; }
+    if (dx !== 0 && this.free(nx, u.z, u.r)) { u.x = nx; return true; }
+    if (dz !== 0 && this.free(u.x, nz, u.r)) { u.z = nz; return true; }
     return false;
   }
 
@@ -428,7 +468,7 @@ export class Game {
     const sx = dx * len / steps, sz = dz * len / steps;
     const x0 = u.x, z0 = u.z;
     for (let i = 0; i < steps; i++) {
-      if (!free(u.x + sx, u.z + sz, u.r)) break;
+      if (!this.free(u.x + sx, u.z + sz, u.r)) break;
       u.x += sx; u.z += sz;
       if (onStep) onStep();
     }
@@ -451,8 +491,8 @@ export class Game {
         const tx = -nz * ((u.laneOff ?? (u.id % 2 ? 1 : -1)) >= 0 ? 1 : -1) * 0.25;
         const tz = nx * ((u.laneOff ?? (u.id % 2 ? 1 : -1)) >= 0 ? 1 : -1) * 0.25;
         const nxp = u.x + nx * push + tx * push, nzp = u.z + nz * push + tz * push;
-        if (free(nxp, nzp, u.r)) { u.x = nxp; u.z = nzp; }
-        else if (free(u.x + nx * push, u.z + nz * push, u.r)) { u.x += nx * push; u.z += nz * push; }
+        if (this.free(nxp, nzp, u.r)) { u.x = nxp; u.z = nzp; }
+        else if (this.free(u.x + nx * push, u.z + nz * push, u.r)) { u.x += nx * push; u.z += nz * push; }
       }
     }
   }
@@ -469,8 +509,8 @@ export class Game {
           const L = Math.sqrt(L2);
           const p = (rr - L) * 0.5;
           const nx = dx / L, nz = dz / L;
-          if (free(a.x - nx * p, a.z - nz * p, a.r)) { a.x -= nx * p; a.z -= nz * p; }
-          if (free(b.x + nx * p, b.z + nz * p, b.r)) { b.x += nx * p; b.z += nz * p; }
+          if (this.free(a.x - nx * p, a.z - nz * p, a.r)) { a.x -= nx * p; a.z -= nz * p; }
+          if (this.free(b.x + nx * p, b.z + nz * p, b.r)) { b.x += nx * p; b.z += nz * p; }
         }
       }
     }
@@ -557,7 +597,7 @@ export class Game {
     const now = this.time;
     if (h.dead) {
       if (now >= h.respawnAt) {
-        const sp = MAP.spawn[h.team];
+        const sp = this.map.spawn[h.team];
         h.dead = false; h.x = sp.x; h.z = sp.z; h.hp = h.maxHp;
         h.slows = []; h.shields = []; h.stunUntil = h.rootUntil = h.airUntil = 0;
         this.ev({ t: 'respawn', id: h.id });
@@ -568,8 +608,8 @@ export class Game {
     // passive gold
     h.gold += PASSIVE_GOLD * DT;
     // fountain
-    if (inFountain(h, h.team)) { h.hp = Math.min(h.maxHp, h.hp + h.maxHp * 0.12 * DT); }
-    if (inFountain(h, 1 - h.team)) this.damage({ kind: 'fountain', team: 1 - h.team, siege: false }, h, h.maxHp * 0.25 * DT, 'true');
+    if (this.inFountain(h, h.team)) { h.hp = Math.min(h.maxHp, h.hp + h.maxHp * 0.12 * DT); }
+    if (this.inFountain(h, 1 - h.team)) this.damage({ kind: 'fountain', team: 1 - h.team, siege: false }, h, h.maxHp * 0.25 * DT, 'true');
     if (h.dead) return;
     // regen dasar + HoT
     h.hp = Math.min(h.maxHp, h.hp + (2 + h.lvl * 0.4) * DT);
@@ -593,7 +633,7 @@ export class Game {
     if (h.recallUntil) {
       if (h.input.mx || h.input.mz || h.input.atk || h.casts.length || stunned) { h.recallUntil = 0; this.ev({ t: 'fx', k: 'recallx', id: h.id }); }
       else if (now >= h.recallUntil) {
-        h.recallUntil = 0; const sp = MAP.spawn[h.team]; h.x = sp.x; h.z = sp.z;
+        h.recallUntil = 0; const sp = this.map.spawn[h.team]; h.x = sp.x; h.z = sp.z;
         this.ev({ t: 'fx', k: 'recalled', id: h.id });
       }
     }
@@ -910,10 +950,7 @@ export class Game {
           else this.damage(u, t, u.dmg, 'phys');
         }
       } else if (u.rootUntil <= now) this.moveToward(u, t.x, t.z, ms, M.range + t.r + u.r - 0.2);
-    } else if (u.rootUntil <= now) {
-      const tx = u.team === 0 ? 132 : 8;
-      this.moveToward(u, tx, MAP.laneZ + u.laneOff, ms);
-    }
+    } else if (u.rootUntil <= now) this.followLane(u, ms, u.lane);
   }
 
   tickStruct(s) {
@@ -1031,16 +1068,22 @@ export class Game {
   tickAllyBoss(b) {
     const now = this.time;
     if (now > b.expire) { b.hp = 0; b.dead = true; this.ev({ t: 'die', id: b.id, x: r1(b.x), z: r1(b.z), k: 'boss', s: 'cerberus' }); return; }
-    // jalan keluar stockyard dulu
-    if (b.wp === 0) { if (this.moveToward(b, 70, 33, 6, 1)) b.wp = 1; return; }
-    if (b.wp === 1) { if (this.moveToward(b, 70, 48, 6, 1)) b.wp = 2; return; }
+    // keluar dari pit menuju lane (blitz lewat gerbang stockyard)
+    const gate = this.map.gate;
+    if (b.wp === 0) { if (!gate || this.moveToward(b, gate.x, gate.zIn - 4, 6, 1)) b.wp = 1; return; }
+    if (b.wp === 1) {
+      if (gate) { if (this.moveToward(b, gate.x, gate.zOut + 3, 6, 1)) b.wp = 2; return; }
+      const L = this.lane(b.lane), pr = laneProject(L, b.x, b.z);
+      if (pr.d < 3) b.wp = 2; else { const p = lanePoint(L, pr.s); this.moveToward(b, p.x, p.z, 6, 1); }
+      return;
+    }
     let t = b.target ? this.ents.get(b.target) : null;
     if (!this.canTarget(b, t) || dist(b, t) > 10) {
       t = null; b.target = 0;
       let bs = Infinity;
       for (const e of this.ents.values()) {
         if (e.kind === 'proj' || !this.canTarget(b, e) || e.team === 2) continue;
-        if (e.kind === 'struct' && !e.armed && e.type !== 'water') continue;
+        if (e.kind === 'struct' && !e.vuln) continue;
         const dd = dist(b, e); if (dd < 8 && dd < bs) { bs = dd; t = e; }
       }
       if (t) b.target = t.id;
@@ -1056,7 +1099,7 @@ export class Game {
         b.f = Math.atan2(t.x - b.x, t.z - b.z);
         if (b.atkCd <= 0) { b.atkCd = 1.3; this.ev({ t: 'atk', id: b.id, tg: t.id }); this.damage(b, t, b.dmg, 'phys'); }
       } else this.moveToward(b, t.x, t.z, 5.5, 3 + t.r + b.r);
-    } else this.moveToward(b, b.team === 0 ? 132 : 8, MAP.laneZ, 5.5);
+    } else this.followLane(b, 5.5, b.lane);
   }
 
   // ------------------------------------------------------------ visibility
@@ -1064,7 +1107,7 @@ export class Game {
     const now = this.time;
     this.reveals = this.reveals.filter((r) => r.until > now);
     const units = [...this.ents.values()].filter((e) => e.kind !== 'proj' && e.kind !== 'struct' && !e.dead);
-    for (const u of units) u.bush = u.kind === 'struct' ? -1 : bushAt(u.x, u.z);
+    for (const u of units) u.bush = u.kind === 'struct' ? -1 : bushAt(this.map, u.x, u.z);
     for (const e of this.ents.values()) {
       if (e.kind === 'proj' || e.kind === 'struct') { e.visible = [true, true, true]; continue; }
       for (const team of [0, 1]) {
@@ -1095,9 +1138,9 @@ export class Game {
     if (this.over) { this.time += DT; return; }
     this.time += DT;
     const now = this.time;
-    if (now >= this.nextWave) { this.spawnWave(); this.nextWave += WAVE.every; }
-    if (!this.otAnnounced && now > 600) { this.otAnnounced = true; this.ev({ t: 'boss', k: 'overtime', msg: 'OVERTIME! Deadline proyek — struktur makin rapuh.' }); }
-    if (!this.bossId && now >= this.bossNext) this.spawnBoss();
+    if (now >= this.nextWave) { this.spawnWave(); this.nextWave += this.map.wave.every; }
+    if (!this.otAnnounced && now > this.map.overtime) { this.otAnnounced = true; this.ev({ t: 'boss', k: 'overtime', msg: 'OVERTIME! Deadline proyek — struktur makin rapuh.' }); }
+    for (const pit of this.pits) if (!pit.bossId && now >= pit.next) this.spawnBoss(pit);
     // pending
     if (this.pending.length) {
       const due = this.pending.filter((p) => p.at <= now);
@@ -1140,9 +1183,12 @@ export class Game {
   snapshot(team, me) {
     const now = this.time;
     const ents = [];
+    const far = !!(this.map.big && me);
     for (const e of this.ents.values()) {
       if (e.dead && e.kind !== 'hero') continue;
       if (team !== 2 && e.visible && !e.visible[team]) continue;
+      // map besar: minion & proyektil jauh dari kamera tidak dikirim (hemat WiFi)
+      if (far && (e.kind === 'minion' || e.kind === 'proj') && d2(e, me) > 2500) continue;
       if (e.kind === 'proj') { ents.push({ i: e.id, k: 'p', s: e.style, x: r1(e.x), z: r1(e.z), f: r1(e.f) }); continue; }
       let fl = 0;
       if (e.stunUntil > now) fl |= 1;
@@ -1154,7 +1200,7 @@ export class Game {
       if (e.dead) fl |= 64;
       if (e.ccImmuneUntil > now) fl |= 128;
       if (e.moving) fl |= 256;
-      if (e.kind === 'struct' && !e.armed && e.type !== 'water') fl |= 1024;
+      if (e.kind === 'struct' && !e.vuln) fl |= 1024;
       if (e.recallUntil) fl |= 2048;
       if (e.markUntil > now) fl |= 4096;
       if (e.kind === 'struct' && e.armed) fl |= 8192;

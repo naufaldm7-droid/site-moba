@@ -1,5 +1,5 @@
 // SITE CLASH — client: jaringan, lobby, HUD, kontrol (PC & HP).
-import { HEROES, PLAYABLE, LOCKED_HEROES, ITEMS, SHOP_ORDER, itemCost, MAP, ULT_LEVEL, S2_LEVEL, STRUCT } from '/shared/data.js';
+import { HEROES, PLAYABLE, LOCKED_HEROES, ITEMS, SHOP_ORDER, itemCost, MAPS, ULT_LEVEL, S2_LEVEL, STRUCT } from '/shared/data.js';
 import { Renderer, TEAM_HEX } from './render.js';
 import { initAudio, play, heroSfx, setSound, soundOn } from './sfx.js';
 
@@ -155,7 +155,9 @@ function renderLobby() {
   grid.querySelectorAll('.hcard').forEach((c) => c.classList.toggle('sel', c.dataset.hero === myHero));
   renderHeroDetail(myHero);
   // mode & start
-  $('size-box').innerHTML = '<span class="muted">Mode:</span>' + [1, 2, 3].map((n) => `<button class="${L.size === n ? 'on' : ''}" data-size="${n}" ${isHost ? '' : 'disabled'}>${n}v${n}</button>`).join('');
+  const MODE_BTN = [[1, '1v1'], [2, '2v2'], [3, '3v3 Blitz'], [5, '5v5 Full EPC']];
+  $('size-box').innerHTML = '<span class="muted">Mode:</span>' + MODE_BTN.map(([n, lb]) => `<button class="${L.size === n ? 'on' : ''}" data-size="${n}" ${isHost ? '' : 'disabled'}>${lb}</button>`).join('')
+    + `<span class="muted">· Map: ${L.size >= 4 ? '160×160 m, 3 lane, Turtle & Lord' : '140×70 m, 1 lane + Stockyard'}</span>`;
   $('size-box').querySelectorAll('[data-size]').forEach((b) => { b.onclick = () => send({ t: 'size', size: +b.dataset.size }); });
   const st = $('btn-start');
   st.disabled = !isHost || L.state !== 'lobby';
@@ -185,7 +187,10 @@ function enterGame(m) {
   S.myHero = mine ? mine.s : null;
   R.reset();
   R.setMe(m.heroId, m.team === 2 ? 0 : m.team);
-  R.spectate = m.heroId ? null : { x: 70, z: 45 };
+  S.map = MAPS[m.mode] || MAPS.blitz;
+  R.setMap(S.map.id);
+  setupMinimap(S.map);
+  R.spectate = m.heroId ? null : { x: S.map.w / 2, z: S.map.h / 2 };
   showScreen('game');
   $('feed').innerHTML = '';
   const spectator = !m.heroId;
@@ -613,23 +618,34 @@ $('btn-full').onclick = async () => {
 let hudT = 0, mmT = 0;
 const mm = $('minimap'), mmx = mm.getContext('2d');
 let mmBg = null;
+function setupMinimap(M) {
+  mm.width = M.big ? 320 : 400; mm.height = Math.round(mm.width * M.h / M.w);
+  mm.style.setProperty('--mm-ar', String(M.w / M.h));
+  mm.classList.toggle('square', !!M.big);
+  mmBg = null;
+}
 function drawMinimapBg() {
+  const M = S.map;
   const c = document.createElement('canvas'); c.width = mm.width; c.height = mm.height;
   const g = c.getContext('2d');
-  const sx = c.width / MAP.w, sz = c.height / MAP.h;
+  const sx = c.width / M.w, sz = c.height / M.h;
   g.fillStyle = '#2a221b'; g.fillRect(0, 0, c.width, c.height);
   g.fillStyle = '#6d6152';
-  for (const w of MAP.walk) g.fillRect(w.x1 * sx, w.z1 * sz, (w.x2 - w.x1) * sx, (w.z2 - w.z1) * sz);
+  for (const w of M.walk) g.fillRect(w.x1 * sx, w.z1 * sz, (w.x2 - w.x1) * sx, (w.z2 - w.z1) * sz);
+  g.strokeStyle = 'rgba(230,210,170,.35)'; g.lineWidth = M.laneWidth * sx * 0.7; g.lineCap = 'round'; g.lineJoin = 'round';
+  for (const pts of Object.values(M.lanes)) { g.beginPath(); pts.forEach(([x, z], i) => (i ? g.lineTo(x * sx, z * sz) : g.moveTo(x * sx, z * sz))); g.stroke(); }
   g.fillStyle = '#9a5a2e';
-  for (const w of MAP.walls) g.fillRect(w.x1 * sx, w.z1 * sz, (w.x2 - w.x1) * sx, (w.z2 - w.z1) * sz);
+  for (const w of M.walls) g.fillRect(w.x1 * sx, w.z1 * sz, (w.x2 - w.x1) * sx, (w.z2 - w.z1) * sz);
   g.fillStyle = '#4f7a3a';
-  for (const b of MAP.bushes) g.fillRect(b.x1 * sx, b.z1 * sz, (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
-  g.strokeStyle = '#d8a520'; g.setLineDash([4, 4]); g.beginPath(); g.arc(MAP.bossPit.x * sx, MAP.bossPit.z * sz, MAP.bossPit.r * sx, 0, 7); g.stroke();
+  for (const b of M.bushes) g.fillRect(b.x1 * sx, b.z1 * sz, (b.x2 - b.x1) * sx, (b.z2 - b.z1) * sz);
+  g.strokeStyle = '#d8a520'; g.lineWidth = 2; g.setLineDash([4, 4]);
+  for (const bp of M.pits) { g.beginPath(); g.arc(bp.x * sx, bp.z * sz, bp.r * sx, 0, 7); g.stroke(); }
   return c;
 }
 function drawMinimap() {
+  if (!S.map) return;
   if (!mmBg) mmBg = drawMinimapBg();
-  const W = mm.width, H = mm.height, sx = W / MAP.w, sz = H / MAP.h;
+  const W = mm.width, H = mm.height, sx = W / S.map.w, sz = H / S.map.h;
   mmx.save();
   mmx.clearRect(0, 0, W, H);
   if (S.team === 1) { mmx.translate(W, H); mmx.rotate(Math.PI); }

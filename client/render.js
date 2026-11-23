@@ -1,6 +1,6 @@
 // SITE CLASH — renderer Three.js: Abandoned Container Laydown Yard (golden hour), model prosedural ringan untuk HP.
 import * as THREE from 'three';
-import { MAP, HEROES, STRUCT, SNAP_HZ } from '/shared/data.js';
+import { MAPS, HEROES, STRUCT, SNAP_HZ, laneProject } from '/shared/data.js';
 
 export const TEAM_HEX = ['#3d8bff', '#ff4040'];
 const TEAM_COL = [0x3d8bff, 0xff4040];
@@ -27,57 +27,76 @@ function canvasTex(w, h, draw, { repeat, srgb = true } = {}) {
   return t;
 }
 
-const PX = 10; // px per meter tekstur tanah
-const G0 = { x: -14, z: -12, w: 168, h: 96 }; // area tanah (meter)
+// area tanah per map (meter) + resolusi tekstur
+const groundArea = (M) => ({ x: -14, z: -12, w: M.w + 28, h: M.h + 26, px: M.big ? 8 : 10 });
+const inAnyRect = (x, z, rects, pad = 0) => rects.some((r) => x >= r.x1 - pad && x <= r.x2 + pad && z >= r.z1 - pad && z <= r.z2 + pad);
 
-function groundTexture() {
-  const W = G0.w * PX, H = G0.h * PX;
+function groundTexture(M) {
+  const G = groundArea(M), PX = G.px;
+  const W = Math.round(G.w * PX), H = Math.round(G.h * PX);
   const R = rng(7);
   return canvasTex(W, H, (g) => {
-    const X = (x) => (x - G0.x) * PX, Z = (z) => (z - G0.z) * PX;
+    const X = (x) => (x - G.x) * PX, Z = (z) => (z - G.z) * PX;
     // dasar: kerikil gelap di luar area main
     g.fillStyle = '#4a4038'; g.fillRect(0, 0, W, H);
-    for (let i = 0; i < 9000; i++) { g.fillStyle = `rgba(${60 + R() * 60},${50 + R() * 45},${40 + R() * 35},0.5)`; g.fillRect(R() * W, R() * H, 2 + R() * 3, 2 + R() * 3); }
-    // pelat beton di area main
-    const slab = (x1, z1, x2, z2) => {
-      for (let x = x1; x < x2; x += 6) for (let z = z1; z < z2; z += 6) {
+    for (let i = 0; i < W * H / 120; i++) { g.fillStyle = `rgba(${60 + R() * 60},${50 + R() * 45},${40 + R() * 35},0.5)`; g.fillRect(R() * W, R() * H, 2 + R() * 3, 2 + R() * 3); }
+    // pelat beton 6x6 m di area yang bisa diinjak
+    for (const w of M.walk) {
+      for (let x = w.x1; x < w.x2; x += 6) for (let z = w.z1; z < w.z2; z += 6) {
         const v = 150 + R() * 30;
         g.fillStyle = `rgb(${v + 10},${v - 4},${v - 22})`;
-        g.fillRect(X(x) + 1, Z(z) + 1, Math.min(6, x2 - x) * PX - 2, Math.min(6, z2 - z) * PX - 2);
-        // noda
-        for (let k = 0; k < 6; k++) { g.fillStyle = `rgba(70,55,40,${0.05 + R() * 0.12})`; g.beginPath(); g.ellipse(X(x + R() * 6), Z(z + R() * 6), 4 + R() * 18, 3 + R() * 12, R() * 3, 0, 7); g.fill(); }
+        g.fillRect(X(x) + 1, Z(z) + 1, Math.min(6, w.x2 - x) * PX - 2, Math.min(6, w.z2 - z) * PX - 2);
+        for (let k = 0; k < 5; k++) { g.fillStyle = `rgba(70,55,40,${0.05 + R() * 0.12})`; g.beginPath(); g.ellipse(X(x + R() * 6), Z(z + R() * 6), 4 + R() * 18, 3 + R() * 12, R() * 3, 0, 7); g.fill(); }
       }
       g.strokeStyle = 'rgba(40,32,26,0.55)'; g.lineWidth = 2;
-      for (let x = x1; x <= x2; x += 6) { g.beginPath(); g.moveTo(X(x), Z(z1)); g.lineTo(X(x), Z(z2)); g.stroke(); }
-      for (let z = z1; z <= z2; z += 6) { g.beginPath(); g.moveTo(X(x1), Z(z)); g.lineTo(X(x2), Z(z)); g.stroke(); }
-    };
-    slab(0, 41, 140, 59);
-    slab(21, 5, 119, 41);
+      for (let x = w.x1; x <= w.x2; x += 6) { g.beginPath(); g.moveTo(X(x), Z(w.z1)); g.lineTo(X(x), Z(w.z2)); g.stroke(); }
+      for (let z = w.z1; z <= w.z2; z += 6) { g.beginPath(); g.moveTo(X(w.x1), Z(z)); g.lineTo(X(w.x2), Z(z)); g.stroke(); }
+    }
+    // pita lane: beton lebih terang + marka kuning putus-putus di kedua tepi
+    const LW = M.laneWidth;
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    for (const pts of Object.values(M.lanes)) {
+      g.strokeStyle = 'rgba(215,200,170,0.28)'; g.lineWidth = LW * PX;
+      g.beginPath(); pts.forEach(([x, z], i) => (i ? g.lineTo(X(x), Z(z)) : g.moveTo(X(x), Z(z)))); g.stroke();
+    }
+    g.lineCap = 'butt';
+    g.strokeStyle = '#d8a520'; g.lineWidth = Math.max(3, PX * 0.5); g.setLineDash([PX * 2.4, PX * 1.4]);
+    for (const pts of Object.values(M.lanes)) {
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [ax, az] = pts[i], [bx, bz] = pts[i + 1];
+        const L = Math.hypot(bx - ax, bz - az), nx = -(bz - az) / L, nz = (bx - ax) / L;
+        for (const sd of [-1, 1]) {
+          const o = (LW / 2 - 0.6) * sd;
+          g.beginPath(); g.moveTo(X(ax + nx * o), Z(az + nz * o)); g.lineTo(X(bx + nx * o), Z(bz + nz * o)); g.stroke();
+        }
+      }
+    }
+    g.setLineDash([]);
     // retakan
     g.strokeStyle = 'rgba(35,28,22,0.6)'; g.lineWidth = 1.5;
-    for (let i = 0; i < 140; i++) {
-      let x = R() * 140, z = R() < 0.5 ? 41 + R() * 18 : 5 + R() * 36;
+    let area = 0; for (const w of M.walk) area += (w.x2 - w.x1) * (w.z2 - w.z1);
+    for (let i = 0; i < area / 32; i++) {
+      const w = M.walk[Math.floor(R() * M.walk.length)];
+      let x = w.x1 + R() * (w.x2 - w.x1), z = w.z1 + R() * (w.z2 - w.z1);
       g.beginPath(); g.moveTo(X(x), Z(z));
       for (let k = 0; k < 6; k++) { x += rand(-1.5, 1.5); z += rand(-1.5, 1.5); g.lineTo(X(x), Z(z)); }
       g.stroke();
     }
-    // garis kuning tepi lane (seperti marka laydown)
-    g.strokeStyle = '#d8a520'; g.lineWidth = 5; g.setLineDash([24, 14]);
-    for (const z of [42.6, 57.4]) { g.beginPath(); g.moveTo(X(2), Z(z)); g.lineTo(X(138), Z(z)); g.stroke(); }
-    g.setLineDash([]);
     // pad fountain (helipad kuning)
-    for (const [cx, col] of [[4, TEAM_HEX[0]], [136, TEAM_HEX[1]]]) {
-      g.strokeStyle = '#e0b020'; g.lineWidth = 6; g.beginPath(); g.arc(X(cx), Z(50), 5 * PX, 0, 7); g.stroke();
-      g.strokeStyle = col; g.lineWidth = 4; g.beginPath(); g.arc(X(cx), Z(50), 3.6 * PX, 0, 7); g.stroke();
-      g.fillStyle = col + '33'; g.beginPath(); g.arc(X(cx), Z(50), 3.4 * PX, 0, 7); g.fill();
-    }
+    M.spawn.forEach((sp, t) => {
+      g.strokeStyle = '#e0b020'; g.lineWidth = PX * 0.6; g.beginPath(); g.arc(X(sp.x), Z(sp.z), 5 * PX, 0, 7); g.stroke();
+      g.strokeStyle = TEAM_HEX[t]; g.lineWidth = PX * 0.4; g.beginPath(); g.arc(X(sp.x), Z(sp.z), 3.6 * PX, 0, 7); g.stroke();
+      g.fillStyle = TEAM_HEX[t] + '33'; g.beginPath(); g.arc(X(sp.x), Z(sp.z), 3.4 * PX, 0, 7); g.fill();
+    });
     // boss pit: lingkaran beton & garis hazard
-    const bp = MAP.bossPit;
-    g.fillStyle = '#6a5a48'; g.beginPath(); g.arc(X(bp.x), Z(bp.z), bp.r * PX, 0, 7); g.fill();
-    g.strokeStyle = '#d8a520'; g.lineWidth = 8; g.setLineDash([18, 18]); g.beginPath(); g.arc(X(bp.x), Z(bp.z), bp.r * PX, 0, 7); g.stroke(); g.setLineDash([]);
+    for (const bp of M.pits) {
+      g.fillStyle = '#6a5a48'; g.beginPath(); g.arc(X(bp.x), Z(bp.z), bp.r * PX, 0, 7); g.fill();
+      g.strokeStyle = '#d8a520'; g.lineWidth = PX * 0.8; g.setLineDash([PX * 1.8, PX * 1.8]); g.beginPath(); g.arc(X(bp.x), Z(bp.z), bp.r * PX, 0, 7); g.stroke(); g.setLineDash([]);
+    }
     // genangan air (reflektif ringan)
-    for (let i = 0; i < 26; i++) {
-      const x = 4 + R() * 132, z = R() < 0.5 ? 43 + R() * 14 : 7 + R() * 32;
+    for (let i = 0; i < area / 380; i++) {
+      const w = M.walk[Math.floor(R() * M.walk.length)];
+      const x = w.x1 + R() * (w.x2 - w.x1), z = w.z1 + R() * (w.z2 - w.z1);
       const grd = g.createRadialGradient(X(x), Z(z), 2, X(x), Z(z), 30 + R() * 30);
       grd.addColorStop(0, 'rgba(255,190,130,0.55)'); grd.addColorStop(0.6, 'rgba(120,110,120,0.35)'); grd.addColorStop(1, 'rgba(90,80,80,0)');
       g.fillStyle = grd; g.beginPath(); g.ellipse(X(x), Z(z), 20 + R() * 35, 10 + R() * 18, R() * 3, 0, 7); g.fill();
@@ -472,7 +491,15 @@ export class Renderer {
     this.myId = 0; this.myTeam = 0;
     this.time = 0;
     this.tex = { corr: corrugatedTexture(), sign: [labelTexture('SITE OFFICE • TIM BIRU', '#123a7a', '#ffffff'), labelTexture('SITE OFFICE • TIM MERAH', '#7a1414', '#ffffff')] };
-    this.buildWorld();
+    // cahaya golden hour (tetap), dunia dibangun per map lewat setMap()
+    this.scene.add(new THREE.HemisphereLight(0xffd9b0, 0x3a3540, 1.25));
+    const sun = new THREE.DirectionalLight(0xffb070, 2.4);
+    sun.position.set(-60, 45, 30);
+    this.scene.add(sun);
+    const fill = new THREE.DirectionalLight(0x8aa6ff, 0.35);
+    fill.position.set(50, 30, -40); this.scene.add(fill);
+    this.map = null; this.world = null;
+    this.setMap('blitz');
     this.initParticles();
     this.raycaster = new THREE.Raycaster();
     this.groundPlane = new THREE.Plane(UP, 0);
@@ -491,18 +518,31 @@ export class Renderer {
     this.W = w; this.H = h;
   }
 
-  buildWorld() {
-    const S = this.scene;
-    S.add(new THREE.HemisphereLight(0xffd9b0, 0x3a3540, 1.25));
-    const sun = new THREE.DirectionalLight(0xffb070, 2.4);
-    sun.position.set(-60, 45, 30);
-    S.add(sun);
-    const fill = new THREE.DirectionalLight(0x8aa6ff, 0.35);
-    fill.position.set(50, 30, -40); S.add(fill);
+  // bangun ulang dunia bila mode/map berganti
+  setMap(mode) {
+    const M = MAPS[mode] || MAPS.blitz;
+    if (this.map === M) return;
+    if (this.world) {
+      this.scene.remove(this.world);
+      const geos = new Set(Object.values(GEO)), mats = new Set(matCache.values());
+      this.world.traverse((o) => {
+        if (o.geometry && !geos.has(o.geometry)) o.geometry.dispose();
+        if (o.material && !mats.has(o.material)) { if (o.material.map && o.material.map !== this.tex.corr) o.material.map.dispose(); o.material.dispose(); }
+      });
+    }
+    this.map = M;
+    this.world = new THREE.Group();
+    this.scene.add(this.world);
+    this.buildWorld(M);
+  }
+
+  buildWorld(M) {
+    const S = this.world;
+    const G = groundArea(M);
     // tanah
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(G0.w, G0.h), new THREE.MeshStandardMaterial({ map: groundTexture(), roughness: 0.9, metalness: 0.05 }));
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(G.w, G.h), new THREE.MeshStandardMaterial({ map: groundTexture(M), roughness: 0.9, metalness: 0.05 }));
     ground.rotation.x = -Math.PI / 2;
-    ground.position.set(G0.x + G0.w / 2, 0, G0.z + G0.h / 2);
+    ground.position.set(G.x + G.w / 2, 0, G.z + G.h / 2);
     S.add(ground);
     // kontainer (instanced)
     const R = rng(42);
@@ -510,35 +550,43 @@ export class Renderer {
     const PAL = [0xb5562a, 0x9c4a26, 0x3e5f8a, 0x4f6b3a, 0x8e2f25, 0x7b7f86, 0x2f4d6e];
     const PALC = { orange: [0xb5562a, 0xa34c25, 0xc0632e], blue: [0x3e5f8a, 0x35577f, 0x4a6c96], green: [0x4f6b3a, 0x5b7542, 0x445f33] };
     const put = (x, z, len, rotY, lvl, color) => list.push({ x, z, len, rotY, y: 1.3 + lvl * 2.6, color });
-    for (const w of MAP.walls) {
+    for (const w of M.walls) {
       const L = w.x2 - w.x1, D = w.z2 - w.z1;
-      const rows = Math.max(1, Math.round(D / 2.45));
-      const n = Math.max(1, Math.round(L / 12.2));
+      const alongX = L >= D;
+      const len = alongX ? L : D, dep = alongX ? D : L;
+      const rows = Math.max(1, Math.round(dep / 2.45));
+      const n = Math.max(1, Math.round(len / 12.2));
       for (let lvl = 0; lvl < w.stack; lvl++) for (let r = 0; r < rows; r++) for (let i = 0; i < n; i++) {
         if (lvl > 0 && R() < 0.3) continue;
         const pal = PALC[w.c] || PAL;
-        put(w.x1 + L * (i + 0.5) / n, w.z1 + D * (r + 0.5) / rows, L / n - 0.15, 0, lvl, pal[Math.floor(R() * pal.length)]);
+        const a = (i + 0.5) / n, b = (r + 0.5) / rows;
+        const x = alongX ? w.x1 + L * a : w.x1 + L * b, z = alongX ? w.z1 + D * b : w.z1 + D * a;
+        put(x, z, len / n - 0.15, alongX ? 0 : Math.PI / 2, lvl, pal[Math.floor(R() * pal.length)]);
       }
     }
-    // dinding luar: tumpukan kontainer di sekeliling area main
-    const ring = (x1, z1, x2, z2, alongX) => {
-      const L = alongX ? x2 - x1 : z2 - z1;
-      for (let p = 0; p < L; p += alongX ? 12.6 : 6.4) {
-        const len = alongX ? 12.2 : 6.1;
-        const cx = alongX ? x1 + p + len / 2 : (x1 + x2) / 2, cz = alongX ? (z1 + z2) / 2 : z1 + p + len / 2;
-        const lv = 1 + Math.floor(R() * 2.2);
-        for (let l = 0; l < lv; l++) put(cx + rand(-0.3, 0.3), cz + rand(-0.3, 0.3), len, (alongX ? 0 : Math.PI / 2) + rand(-0.04, 0.04), l, PAL[Math.floor(R() * PAL.length)]);
+    // dinding keliling: kontainer otomatis di luar setiap tepi area main
+    const outside = (x, z) => !inAnyRect(x, z, M.walk, 0.4);
+    for (const w of M.walk) {
+      const edges = [
+        [w.x1, w.z1, w.x2, w.z1, 0, -1], [w.x1, w.z2, w.x2, w.z2, 0, 1],
+        [w.x1, w.z1, w.x1, w.z2, -1, 0], [w.x2, w.z1, w.x2, w.z2, 1, 0],
+      ];
+      for (const [ax, az, bx, bz, nx, nz] of edges) {
+        const L = Math.hypot(bx - ax, bz - az), alongX = az === bz;
+        for (let p = 0; p < L; p += 6.4) {
+          const t = Math.min(L, p + 3.05);
+          const cx = ax + (bx - ax) * t / L, cz = az + (bz - az) * t / L;
+          for (let row = 0; row < 2; row++) {
+            const off = 1.5 + row * 2.6;
+            const x = cx + nx * off, z = cz + nz * off;
+            if (!outside(x, z) || !outside(x - nx * 1.2, z - nz * 1.2)) continue;
+            if (row === 1 && R() < 0.4) continue;
+            const lv = 1 + Math.floor(R() * 2.2);
+            for (let l = 0; l < lv; l++) put(x + rand(-0.2, 0.2), z + rand(-0.2, 0.2), 6.1, (alongX ? 0 : Math.PI / 2) + rand(-0.04, 0.04), l, PAL[Math.floor(R() * PAL.length)]);
+          }
+        }
       }
-    };
-    ring(-6, 60.5, 146, 63, true);     // belakang lane
-    ring(-6, 64.5, 146, 67, true);
-    ring(-1.8, 41, -1.8, 60, false);   // ujung kiri
-    ring(141.8, 41, 141.8, 60, false); // ujung kanan
-    ring(18, 2.2, 122, 4, true);       // bawah stockyard
-    ring(19.2, 4, 19.2, 41, false);    // sisi kiri stockyard
-    ring(120.8, 4, 120.8, 41, false);
-    // blok luar kiri-bawah & kanan-bawah
-    for (const [bx, bz] of [[4, 34], [12, 30], [4, 22], [10, 14], [130, 34], [124, 28], [134, 20], [128, 12], [6, 6], [134, 6]]) put(bx, bz, R() < 0.5 ? 12.2 : 6.1, R() * 3, Math.floor(R() * 2), PAL[Math.floor(R() * PAL.length)]);
+    }
     const cm = new THREE.MeshStandardMaterial({ map: this.tex.corr, roughness: 0.7, metalness: 0.25 });
     const inst = new THREE.InstancedMesh(GEO.box, cm, list.length);
     list.forEach((c, i) => {
@@ -548,42 +596,53 @@ export class Renderer {
       inst.setColorAt(i, tmpC.setHex(c.color));
     });
     S.add(inst);
-    // pagar kawat di belakang lane
-    const fence = new THREE.Mesh(GEO.plane, new THREE.MeshBasicMaterial({ map: fenceTexture(), transparent: true, alphaTest: 0.3, side: THREE.DoubleSide }));
-    fence.scale.set(146, 2.6, 1); fence.position.set(70, 1.3, 58.8); S.add(fence);
-    const post = mat(0x777777, { metal: 0.6 });
-    const posts = new THREE.InstancedMesh(GEO.cyl6, post, 30);
-    for (let i = 0; i < 30; i++) { tmpM.compose(tmpV.set(-2 + i * 5, 1.4, 58.8), tmpQ.identity(), tmpS.set(0.06, 2.8, 0.06)); posts.setMatrixAt(i, tmpM); }
-    S.add(posts);
-    // gantry crane kuning (ikon area laydown)
+    // gantry crane kuning (ikon area laydown) di luar area main
     const yel = mat(0xd9a21b, { metal: 0.4, rough: 0.5 });
-    const gc = new THREE.Group(); gc.position.set(30, 0, 66); S.add(gc);
-    for (const x of [-9, 9]) for (const z of [-2, 2]) gc.add(box(yel, 0.6, 10, 0.6, x, 5, z));
-    gc.add(box(yel, 20, 0.9, 0.8, 0, 10.2, -2)); gc.add(box(yel, 20, 0.9, 0.8, 0, 10.2, 2));
-    gc.add(box(mat(0x333333), 1.6, 1.2, 4.6, 3, 9.6, 0));
-    gc.add(strut(mat(0x222222), [3, 9, 0], [3, 5, 0], 0.03));
-    gc.add(mesh(GEO.torus, mat(0xd9a21b), 0.3, 0.3, 0.3, 3, 4.8, 0));
-    // dekorasi: drum oli, tumpukan H-beam, gulungan kabel, barrier
+    const cranes = M.big ? [[40, -7, 0], [120, 167, 0], [-7, 80, Math.PI / 2]] : [[30, 66, 0], [110, 66, 0]];
+    for (const [x, z, ry] of cranes) {
+      const gc = new THREE.Group(); gc.position.set(x, 0, z); gc.rotation.y = ry; S.add(gc);
+      for (const gx of [-9, 9]) for (const gz of [-2, 2]) gc.add(box(yel, 0.6, 10, 0.6, gx, 5, gz));
+      gc.add(box(yel, 20, 0.9, 0.8, 0, 10.2, -2)); gc.add(box(yel, 20, 0.9, 0.8, 0, 10.2, 2));
+      gc.add(box(mat(0x333333), 1.6, 1.2, 4.6, 3, 9.6, 0));
+      gc.add(strut(mat(0x222222), [3, 9, 0], [3, 5, 0], 0.03));
+      gc.add(mesh(GEO.torus, mat(0xd9a21b), 0.3, 0.3, 0.3, 3, 4.8, 0));
+    }
+    // dekorasi non-tabrak: drum oli, tumpukan H-beam, gulungan kabel — di luar lane, jauh dari struktur
     const drumM = [mat(0xa8322a, { metal: 0.4 }), mat(0x3a6aa8, { metal: 0.4 }), mat(0xd9a21b, { metal: 0.4 })];
-    const decoSpots = [[24, 44.2], [30, 56.6], [52, 56.8], [83, 43.3], [102, 56.8], [118, 43.4], [26, 8], [113, 9], [60, 8], [80, 33], [35, 30], [104, 14]];
-    for (const [x, z] of decoSpots) {
+    const laneDist = (x, z) => Math.min(...Object.values(M.laneData).map((L) => laneProject(L, x, z).d));
+    const busy = [...M.structures, ...M.pits, ...M.spawn];
+    let area = 0; for (const w of M.walk) area += (w.x2 - w.x1) * (w.z2 - w.z1);
+    let placed = 0;
+    for (let tries = 0; tries < 400 && placed < area / 450; tries++) {
+      const w = M.walk[Math.floor(R() * M.walk.length)];
+      const x = w.x1 + 1.5 + R() * (w.x2 - w.x1 - 3), z = w.z1 + 1.5 + R() * (w.z2 - w.z1 - 3);
+      if (laneDist(x, z) < M.laneWidth / 2 + 1.5 || inAnyRect(x, z, M.walls, 1.5) || inAnyRect(x, z, M.bushes, 1)) continue;
+      if (busy.some((b) => Math.hypot(b.x - x, b.z - z) < 9)) continue;
+      placed++;
       const k = Math.floor(R() * 3);
       if (k === 0) for (let i = 0; i < 3; i++) S.add(mesh(GEO.cyl, drumM[Math.floor(R() * 3)], 0.3, 0.9, 0.3, x + (i % 2) * 0.65, 0.45, z + (i > 1 ? 0.6 : 0)));
-      else if (k === 1) { const st = mat(0x7a4f32, { metal: 0.5, rough: 0.6 }); for (let i = 0; i < 4; i++) S.add(box(st, 3.2, 0.3, 0.35, x, 0.25 + Math.floor(i / 2) * 0.32, z + (i % 2) * 0.45)); }
-      else { const reel = mesh(GEO.cyl, mat(0x8a6238), 0.7, 0.6, 0.7, x, 0.7, z); reel.rotation.x = Math.PI / 2; S.add(reel); S.add(rx(mesh(GEO.cyl, mat(0x222222), 0.55, 0.62, 0.55, x, 0.7, z), Math.PI / 2)); }
+      else if (k === 1) { const st = mat(0x7a4f32, { metal: 0.5, rough: 0.6 }); const ry = R() * 3; for (let i = 0; i < 4; i++) { const b = box(st, 3.2, 0.3, 0.35, x + Math.sin(ry) * (i % 2) * 0.45, 0.25 + Math.floor(i / 2) * 0.32, z + Math.cos(ry) * (i % 2) * 0.45); b.rotation.y = ry; S.add(b); } }
+      else { S.add(rx(mesh(GEO.cyl, mat(0x8a6238), 0.7, 0.6, 0.7, x, 0.7, z), Math.PI / 2)); S.add(rx(mesh(GEO.cyl, mat(0x222222), 0.55, 0.62, 0.55, x, 0.7, z), Math.PI / 2)); }
     }
-    // jersey barrier kuning-hitam di gerbang stockyard
+    // jersey barrier kuning-hitam di ujung tumpukan kontainer
     const barTex = canvasTex(128, 32, (g2, w, h) => { for (let i = -2; i < 10; i++) { g2.fillStyle = i % 2 ? '#e2b21c' : '#1e1e1e'; g2.beginPath(); g2.moveTo(i * 16, h); g2.lineTo(i * 16 + 16, h); g2.lineTo(i * 16 + 32, 0); g2.lineTo(i * 16 + 16, 0); g2.fill(); } });
-    const barM = mat(0xffffff, { map: barTex });
-    for (const [x, z] of [[55, 36.5], [86, 36.5], [21.5, 43.6], [118.5, 43.6]]) S.add(box(barM, 2.4, 0.9, 0.5, x, 0.45, z));
+    const barM = new THREE.MeshStandardMaterial({ map: barTex, roughness: 0.7 });
+    for (const w of M.walls) {
+      const alongX = (w.x2 - w.x1) >= (w.z2 - w.z1);
+      const b = box(barM, 2.4, 0.9, 0.5, alongX ? w.x2 + 1.4 : (w.x1 + w.x2) / 2, 0.45, alongX ? (w.z1 + w.z2) / 2 : w.z2 + 1.4);
+      if (!alongX) b.rotation.y = Math.PI / 2;
+      if (laneDist(b.position.x, b.position.z) > M.laneWidth / 2 + 1) S.add(b);
+    }
     // ilalang (instanced, bergoyang angin)
-    this.buildGrass();
-    // lampu sorot tiang di sekitar lane
+    this.buildGrass(M);
+    // tiang lampu sorot di luar area main
     const pole = mat(0x555555, { metal: 0.6 });
-    for (const x of [35, 70, 105]) { S.add(box(pole, 0.2, 9, 0.2, x, 4.5, 59.6)); S.add(box(mat(0x222222, { emissive: 0xfff0c0, ei: 1.5 }), 1.4, 0.4, 0.4, x, 9, 59.3)); }
+    const lamp = mat(0x222222, { emissive: 0xfff0c0, ei: 1.5 });
+    const lamps = M.big ? [[40, 3.5], [80, 3.5], [120, 3.5], [40, 156.5], [80, 156.5], [120, 156.5], [3.5, 60], [3.5, 100], [156.5, 60], [156.5, 100]] : [[35, 59.6], [70, 59.6], [105, 59.6]];
+    for (const [x, z] of lamps) { S.add(box(pole, 0.2, 9, 0.2, x, 4.5, z)); S.add(box(lamp, 1.4, 0.4, 0.4, x, 9, z)); }
   }
 
-  buildGrass() {
+  buildGrass(M) {
     const R = rng(99);
     const tex = grassTexture();
     const geo = new THREE.BufferGeometry();
@@ -599,7 +658,7 @@ export class Renderer {
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     geo.setIndex(idx); geo.computeVertexNormals();
     const m = new THREE.MeshLambertMaterial({ map: tex, alphaTest: 0.45, side: THREE.DoubleSide });
-    const uTime = { value: 0 };
+    const uTime = this.grassTime || { value: 0 };
     this.grassTime = uTime;
     m.onBeforeCompile = (sh) => {
       sh.uniforms.uTime = uTime;
@@ -609,16 +668,21 @@ export class Renderer {
         transformed.x += sway; transformed.z += sway * 0.5;`);
     };
     const tufts = [];
-    for (const b of MAP.bushes) {
+    for (const b of M.bushes) {
       const area = (b.x2 - b.x1) * (b.z2 - b.z1);
       for (let i = 0; i < area * 2.2; i++) tufts.push([rand(b.x1 + 0.2, b.x2 - 0.2), rand(b.z1 + 0.2, b.z2 - 0.2), rand(1.5, 2.1)]);
     }
-    // ilalang dekoratif di sela kontainer luar
-    for (let i = 0; i < 160; i++) {
-      const side = R();
-      if (side < 0.4) tufts.push([R() * 140, 58.9 + R() * 1.2, rand(0.9, 1.6)]);
-      else if (side < 0.7) tufts.push([rand(20, 120), rand(4.2, 6), rand(0.9, 1.5)]);
-      else tufts.push([R() < 0.5 ? rand(19.8, 22) : rand(118, 120.2), rand(6, 41), rand(0.9, 1.5)]);
+    // ilalang dekoratif di sela kontainer keliling (di luar area main)
+    for (const w of M.walk) {
+      const per = 2 * ((w.x2 - w.x1) + (w.z2 - w.z1));
+      for (let i = 0; i < per / 3; i++) {
+        const side = Math.floor(R() * 4), t = R();
+        const o = 0.3 + R() * 0.6;
+        const x = side < 2 ? w.x1 + (w.x2 - w.x1) * t : side === 2 ? w.x1 - o : w.x2 + o;
+        const z = side >= 2 ? w.z1 + (w.z2 - w.z1) * t : side === 0 ? w.z1 - o : w.z2 + o;
+        if (inAnyRect(x, z, M.walk, 0.1)) continue;
+        tufts.push([x, z, rand(0.9, 1.6)]);
+      }
     }
     const inst = new THREE.InstancedMesh(geo, m, tufts.length);
     tufts.forEach(([x, z, h], i) => {
@@ -627,7 +691,7 @@ export class Renderer {
       inst.setMatrixAt(i, tmpM);
       inst.setColorAt(i, tmpC.setRGB(0.85 + R() * 0.3, 0.85 + R() * 0.25, 0.7 + R() * 0.2));
     });
-    this.scene.add(inst);
+    this.world.add(inst);
   }
 
   // ------------------------------------------------------------------ particles
@@ -1057,9 +1121,10 @@ export class Renderer {
     if (this.shake > 0) { this.shake -= dt; sx = rand(-0.25, 0.25) * this.shake * 2; sz = rand(-0.25, 0.25) * this.shake * 2; }
     // kamera di sisi +z untuk BIRU (musuh di kanan layar), sisi -z untuk MERAH (diputar 180°)
     const sgn = yaw ? -1 : 1;
-    const ahead = 2.5 * sgn; // geser pandangan sedikit ke arah musuh
-    this.camera.position.set(this.camTarget.x + ahead + sx, up, this.camTarget.z + sgn * back + sz);
-    this.camera.lookAt(this.camTarget.x + ahead, 0, this.camTarget.z - sgn * 2);
+    const av = this.map ? this.map.ahead : [1, 0]; // geser pandangan sedikit ke arah musuh
+    const ax = av[0] * 2.5 * sgn, az = av[1] * 2.5 * sgn;
+    this.camera.position.set(this.camTarget.x + ax + sx, up, this.camTarget.z + az + sgn * back + sz);
+    this.camera.lookAt(this.camTarget.x + ax, 0, this.camTarget.z + az - sgn * 2);
     this.gl.render(this.scene, this.camera);
     this.updateLabels();
     void input;

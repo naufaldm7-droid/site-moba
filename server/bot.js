@@ -1,8 +1,6 @@
-// AI bot hero: farming lane, trading, mundur & recall saat HP rendah, beli item rekomendasi, ambil boss.
-import { MAP, ITEMS, ULT_LEVEL, S2_LEVEL, STRUCT } from '../shared/data.js';
-import { d2, dist, inFountain } from './game.js';
-
-const GATE_X = 70;
+// AI bot hero: farming di lane tugasnya (top/mid/bot), trading, mundur & recall, beli item rekomendasi, ambil boss.
+import { ITEMS, ULT_LEVEL, S2_LEVEL, STRUCT, laneProject, lanePoint } from '../shared/data.js';
+import { d2, dist } from './game.js';
 
 function canCast(h, slot) {
   if (h.cds[slot] > 0) return false;
@@ -30,12 +28,13 @@ function shop(g, h) {
   }
 }
 
-// gerak dengan rute lewat gerbang stockyard bila perlu
+// gerak (map blitz: lewat gerbang stockyard bila menyeberang lane <-> jungle)
 function steer(g, h, tx, tz, stop = 0.5) {
   let gx = tx, gz = tz;
-  const inJungle = h.z < 42.5, tJungle = tz < 41;
-  if (inJungle !== tJungle && Math.abs(h.x - GATE_X) > 10) {
-    gx = GATE_X; gz = inJungle ? 38 : 45;
+  const gate = g.map.gate;
+  if (gate) {
+    const inJungle = h.z < gate.split + 0.5, tJungle = tz < gate.split - 1;
+    if (inJungle !== tJungle && Math.abs(h.x - gate.x) > 10) { gx = gate.x; gz = inJungle ? gate.zIn : gate.zOut; }
   }
   const dx = gx - h.x, dz = gz - h.z;
   const L = Math.hypot(dx, dz);
@@ -82,6 +81,19 @@ function useSkills(g, h, e, allies) {
   }
 }
 
+// titik pulang: dekat base langsung ke spawn, selain itu mundur menyusuri lane terdekat
+function homeward(g, h) {
+  const sp = g.map.spawn[h.team];
+  if (Math.hypot(h.x - sp.x, h.z - sp.z) < 35) return sp;
+  const dir = h.team === 0 ? 1 : -1;
+  let best = null;
+  for (const L of Object.values(g.map.laneData)) {
+    const pr = laneProject(L, h.x, h.z);
+    if (!best || pr.d < best.pr.d) best = { L, pr };
+  }
+  return lanePoint(best.L, best.pr.s - dir * 14);
+}
+
 export function botThink(g, h) {
   const b = h.brain;
   const now = g.time;
@@ -90,6 +102,9 @@ export function botThink(g, h) {
   const dir = h.team === 0 ? 1 : -1;
   const hr = h.hp / h.maxHp;
   const c = h.cur;
+  const laneKey = g.map.laneData[b.lane] ? b.lane : Object.keys(g.map.laneData)[0];
+  const lane = g.lane(laneKey);
+  const prog = (u) => laneProject(lane, u.x, u.z).s;
 
   if ((b.nextShop || 0) < now) { b.nextShop = now + 2.5; shop(g, h); }
   if (h.recallUntil) return; // sedang recall: diam
@@ -111,23 +126,26 @@ export function botThink(g, h) {
   // ---- mundur
   if (hr < 0.28 || (b.retreat && hr < 0.85)) {
     b.retreat = true;
-    if (inFountain(h, h.team)) { if (hr > 0.85) b.retreat = false; return; }
-    const sp = MAP.spawn[h.team];
-    if (!enemies.length && Math.abs(h.x - sp.x) > 30 && now - h.lastCombatAt > 2.5) {
+    if (g.inFountain(h, h.team)) { if (hr > 0.85) b.retreat = false; return; }
+    const sp = g.map.spawn[h.team];
+    if (!enemies.length && Math.hypot(h.x - sp.x, h.z - sp.z) > 30 && now - h.lastCombatAt > 2.5) {
       g.setInput(h, { t: 'recall' });
       return;
     }
     if (enemies.length) { const e = enemies[0]; if (dist(e, h) < 6) useSkills(g, h, e, allies); }
-    steer(g, h, sp.x, sp.z);
+    const home = homeward(g, h);
+    steer(g, h, home.x, home.z);
     return;
   }
   b.retreat = false;
 
-  // ---- struktur musuh terdepan (bahaya)
-  let danger = null;
+  // ---- struktur musuh terdepan di lane ini (bahaya)
+  let danger = null, dangerS = 0;
   for (const e of g.ents.values()) {
     if (e.kind !== 'struct' || e.team === h.team || e.dead || !e.armed) continue;
-    if (!danger || (dir > 0 ? e.x < danger.x : e.x > danger.x)) danger = e;
+    if (e.lane !== laneKey && e.type !== 'base') continue;
+    const sS = e.lane ? e.laneS : (dir > 0 ? lane.len + 6 : -6);
+    if (!danger || dir * sS < dir * dangerS) { danger = e; dangerS = sS; }
   }
   const allyMinionsUnder = (s) => {
     let n = 0;
@@ -135,30 +153,34 @@ export function botThink(g, h) {
     return n;
   };
   const turretSafe = (x, z) => {
-    if (!danger) return true;
-    const rr = STRUCT[danger.type].range + 2;
-    if ((x - danger.x) ** 2 + (z - danger.z) ** 2 > rr * rr) return true;
-    const tgt = g.ents.get(danger.target);
-    return allyMinionsUnder(danger) >= 1 && (!tgt || tgt.kind !== 'hero');
+    for (const e of g.ents.values()) {
+      if (e.kind !== 'struct' || e.team === h.team || e.dead || !e.armed) continue;
+      const rr = STRUCT[e.type].range + 2;
+      if ((x - e.x) ** 2 + (z - e.z) ** 2 > rr * rr) continue;
+      const tgt = g.ents.get(e.target);
+      if (!(allyMinionsUnder(e) >= 1 && (!tgt || tgt.kind !== 'hero'))) return false;
+    }
+    return true;
   };
 
   // ---- objektif boss
   if ((b.nextObj || 0) < now) {
     b.nextObj = now + 6;
-    const boss = g.bossId ? g.ents.get(g.bossId) : null;
-    b.obj = false;
-    if (boss && !boss.dead && h.lvl >= 4 && hr > 0.6) {
-      const mates = g.heroes.filter((o) => o.team === h.team && !o.dead && o.hp / o.maxHp > 0.55).length;
-      const foesNear = g.heroes.filter((o) => o.team !== h.team && !o.dead && d2(o, boss) < 400).length;
-      if (mates >= 2 && foesNear <= 1 && Math.random() < 0.55) b.obj = true;
+    b.obj = 0;
+    if (h.lvl >= 4 && hr > 0.6) {
+      for (const boss of g.bosses()) {
+        if (dist(h, boss) > (g.map.big ? 60 : 200)) continue;
+        const mates = g.heroes.filter((o) => o.team === h.team && !o.dead && o.hp / o.maxHp > 0.55 && dist(o, boss) < 70).length;
+        const foesNear = g.heroes.filter((o) => o.team !== h.team && !o.dead && d2(o, boss) < 400).length;
+        if (mates >= (g.map.big ? 3 : 2) && foesNear <= 1 && Math.random() < 0.55) { b.obj = boss.id; break; }
+      }
     }
   }
 
   // ---- lawan hero
   let target = null;
   for (const e of enemies) {
-    const dd = dist(e, h);
-    if (dd > 11) continue;
+    if (dist(e, h) > 11) continue;
     if (!target || e.hp / e.maxHp < target.hp / target.maxHp) target = e;
   }
   if (target) {
@@ -178,37 +200,37 @@ export function botThink(g, h) {
       }
       return;
     }
-    // kalah posisi: mundur sedikit sambil tetap pakai skill pelindung
+    // kalah posisi: mundur menyusuri lane sambil tetap pakai skill pelindung
     if (dist(h, target) < 6) useSkills(g, h, target, allies);
-    const backX = h.x - dir * 6;
-    steer(g, h, backX, MAP.laneZ);
+    const back = homeward(g, h);
+    steer(g, h, back.x, back.z);
     return;
   }
 
   // ---- boss
-  if (b.obj && g.bossId) {
-    const boss = g.ents.get(g.bossId);
-    if (boss && !boss.dead) {
+  if (b.obj) {
+    const boss = g.ents.get(b.obj);
+    if (boss && !boss.dead && boss.team === 2) {
       if (dist(h, boss) > c.range + boss.r + 1) steer(g, h, boss.x, boss.z, c.range + boss.r);
       else { inp.atk = true; inp.tg = boss.id; if (h.hero !== 'hse') useSkills(g, h, boss, allies); }
       return;
     }
-    b.obj = false;
+    b.obj = 0;
   }
 
   // ---- farming lane
-  let front = null;
+  let front = null, frontS = 0;
   for (const e of g.ents.values()) {
-    if ((e.kind === 'minion' || (e.kind === 'boss' && e.ally)) && e.team === h.team && !e.dead && e.z > 41) {
-      if (!front || (dir > 0 ? e.x > front.x : e.x < front.x)) front = e;
+    if ((e.kind === 'minion' || (e.kind === 'boss' && e.ally)) && e.team === h.team && !e.dead && e.lane === laneKey) {
+      const sS = prog(e);
+      if (!front || dir * sS > dir * frontS) { front = e; frontS = sS; }
     }
   }
   // minion musuh dalam jangkauan
   let farm = null;
   for (const e of g.ents.values()) {
     if (e.kind !== 'minion' || e.team === h.team || e.dead || !e.visible[h.team]) continue;
-    const dd = dist(e, h);
-    if (dd > c.range + 4) continue;
+    if (dist(e, h) > c.range + 4) continue;
     if (!turretSafe(e.x, e.z)) continue;
     if (!farm || e.hp < farm.hp) farm = e;
   }
@@ -218,7 +240,7 @@ export function botThink(g, h) {
     return;
   }
   // struktur musuh bila aman (ada minion kawan di bawahnya)
-  if (danger && dist(h, danger) < c.range + danger.r + 6 && allyMinionsUnder(danger) >= 1) {
+  if (danger && danger.vuln && dist(h, danger) < c.range + danger.r + 6 && allyMinionsUnder(danger) >= 1) {
     const tgt = g.ents.get(danger.target);
     if (!tgt || tgt.kind !== 'hero') {
       inp.atk = true; inp.tg = danger.id;
@@ -226,23 +248,35 @@ export function botThink(g, h) {
       return;
     }
   }
-  // posisi berdiri
-  let px;
-  if (front) px = front.x - dir * (h.H.melee ? 1.5 : 4);
+  // posisi berdiri di lane
+  let ps;
+  if (front) ps = frontS - dir * (h.H.melee ? 1.5 : 4);
   else {
-    // tunggu di belakang turret sendiri terdepan
-    let own = null;
-    for (const e of g.ents.values()) if (e.kind === 'struct' && e.team === h.team && !e.dead && (!own || (dir > 0 ? e.x > own.x : e.x < own.x))) own = e;
-    px = own ? own.x + dir * 3 : MAP.spawn[h.team].x + dir * 10;
+    // tunggu di depan struktur sendiri terdepan di lane ini
+    let own = null, ownS = 0;
+    for (const e of g.ents.values()) {
+      if (e.kind !== 'struct' || e.team !== h.team || e.dead || e.lane !== laneKey) continue;
+      if (!own || dir * e.laneS > dir * ownS) { own = e; ownS = e.laneS; }
+    }
+    ps = own ? ownS + dir * 3 : (dir > 0 ? 8 : lane.len - 8);
   }
-  if (danger && !turretSafe(px, MAP.laneZ)) px = danger.x - dir * (STRUCT[danger.type].range + 2.5);
-  const pz = MAP.laneZ + ((h.id % 3) - 1) * 2.2;
-  steer(g, h, px, pz, 1.2);
-  // surveyor: drone recon ke semak terdekat di depan sesekali
+  if (danger && danger.lane) {
+    const limit = dangerS - dir * (STRUCT[danger.type].range + 2.5);
+    const lp = lanePoint(lane, ps);
+    if (dir * ps > dir * limit && !turretSafe(lp.x, lp.z)) ps = limit;
+  }
+  const off = ((h.id % 3) - 1) * 2.2;
+  // jauh dari lane: kembali dulu ke titik lane terdekat; selain itu susuri lane (jangan potong lewat tikungan)
+  const pr = laneProject(lane, h.x, h.z);
+  if (Math.abs(ps - pr.s) > 12) ps = pr.s + Math.sign(ps - pr.s) * 12;
+  const p = lanePoint(lane, ps);
+  if (pr.d > 20) { const q = lanePoint(lane, pr.s); steer(g, h, q.x, q.z, 2); }
+  else steer(g, h, p.x - p.dz * off, p.z + p.dx * off, 1.2);
+  // surveyor: drone recon ke semak terdekat sesekali
   if (h.hero === 'surveyor' && (b.nextDrone || 0) < now && h.lvl >= 2) {
     b.nextDrone = now + 18;
     let best = null, bd = Infinity;
-    for (const bu of MAP.bushes) {
+    for (const bu of g.map.bushes) {
       const cx = (bu.x1 + bu.x2) / 2, cz = (bu.z1 + bu.z2) / 2;
       const dd = (cx - h.x) ** 2 + (cz - h.z) ** 2;
       if (dd < bd && dd < 600) { bd = dd; best = { x: cx, z: cz }; }

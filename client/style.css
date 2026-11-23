@@ -141,7 +141,8 @@ input[type=text]:focus { border-color: var(--hz); }
 #topbar .s1 { background: rgba(255,64,64,.35); }
 #topbar .tm { padding: 5px 12px; font-size: 15px; color: var(--hz); min-width: 64px; text-align: center; }
 #kda { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); font: 700 12px var(--head); color: var(--mut); pointer-events: none; text-shadow: 0 1px 2px #000; }
-#minimap { position: absolute; top: 6px; left: calc(6px + var(--safe-l)); width: 200px; height: 100px; border-radius: 8px; border: 1px solid var(--line); background: #1a1510; pointer-events: none; }
+#minimap { position: absolute; top: 6px; left: calc(6px + var(--safe-l)); width: 200px; height: auto; aspect-ratio: var(--mm-ar, 2); border-radius: 8px; border: 1px solid var(--line); background: #1a1510; pointer-events: none; }
+#minimap.square { width: 170px; }
 #tr { position: absolute; top: 6px; right: calc(6px + var(--safe-r)); display: flex; gap: 6px; align-items: center; }
 .ibtn { width: 40px; height: 40px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); display: grid; place-items: center; font-size: 18px; }
 #gold { display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--hz2); background: var(--panel); font: 800 17px var(--head); color: var(--own); }
@@ -243,7 +244,8 @@ table.sbt tr.me { background: rgba(242,194,48,.08); }
 
 /* layar kecil (HP landscape) */
 @media (max-height: 460px) {
-  #minimap { width: 150px; height: 75px; }
+  #minimap { width: 150px; }
+  #minimap.square { width: 118px; }
   #skills { transform: scale(.86); transform-origin: right bottom; }
   #me-panel { transform: translateX(-50%) scale(.86); transform-origin: center bottom; }
   #feed { top: 92px; }
