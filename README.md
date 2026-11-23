@@ -23,6 +23,10 @@ Manual: `npm install` lalu `npm start`. Ganti port: `set PORT=8080 && npm start`
 2. Link tampil di jendela server **dan di lobby** (tombol *Salin*). Kirim ke teman. Mereka cukup buka link itu di browser HP/PC, tanpa install.
 3. Link berganti setiap server dinyalakan ulang. Laptop harus tetap menyala & terhubung internet selama main.
 4. Mode 5v5 penuh = 10 pemain; tiap pemain butuh ±50 KB/s. Upload internet laptop ±5 Mbps sudah cukup.
+5. **HP Android / iPhone**: buka link di Chrome (Android) atau Safari (iPhone), boleh pakai data seluler / WiFi mana saja.
+   Supaya terasa seperti aplikasi: Android → menu ⋮ → *Tambahkan ke layar utama*; iPhone → tombol Bagikan → *Add to Home Screen*.
+   Buka dari ikon itu, putar HP ke landscape. Unduhan pertama ±25 MB (model & tekstur, di-gzip), berikutnya diambil dari cache.
+6. Jika link baru belum bisa dibuka, tunggu ±1 menit (DNS link baru perlu menyebar).
 
 ## Kontrol
 

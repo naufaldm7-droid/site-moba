@@ -6,6 +6,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import zlib from 'node:zlib';
 import { WebSocketServer } from 'ws';
 import { Game, DT } from './game.js';
 import { HEROES, PLAYABLE, SNAP_HZ, TICK_HZ, modeForSize } from '../shared/data.js';
@@ -47,6 +48,16 @@ const MIME = {
   '.webmanifest': 'application/manifest+json', '.glb': 'model/gltf-binary', '.gltf': 'model/gltf+json', '.bin': 'application/octet-stream',
   '.webp': 'image/webp', '.ktx2': 'image/ktx2', '.wasm': 'application/wasm',
 };
+const GZ_EXT = new Set(['.html', '.js', '.css', '.json', '.svg', '.webmanifest', '.gltf', '.glb', '.bin', '.hdr']);
+const gzCache = new Map(); // path -> { etag, buf }
+function gzipFile(file, etag, cb) {
+  const c = gzCache.get(file);
+  if (c && c.etag === etag) { cb(null, c.buf); return; }
+  fs.readFile(file, (err, raw) => {
+    if (err) { cb(err); return; }
+    zlib.gzip(raw, { level: 6 }, (e, buf) => { if (!e) gzCache.set(file, { etag, buf }); cb(e, buf); });
+  });
+}
 const ROUTES = [
   ['/vendor/jsm/', path.join(ROOT, 'node_modules', 'three', 'examples', 'jsm')],
   ['/vendor/', path.join(ROOT, 'node_modules', 'three', 'build')],
@@ -76,7 +87,20 @@ const server = http.createServer((req, res) => {
     if (!file.startsWith(dir)) break; // cegah path traversal
     fs.stat(file, (err, st) => {
       if (err || !st.isFile()) { res.writeHead(404); res.end('404'); return; }
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream', 'Cache-Control': prefix === '/vendor/' ? 'max-age=86400' : 'no-cache' });
+      // Hemat kuota HP: ETag -> 304 bila tidak berubah, aset 3D di-cache seminggu, file teks di-gzip
+      const ext = path.extname(file).toLowerCase();
+      const etag = `W/"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+      const cache = prefix.startsWith('/vendor/') ? 'public, max-age=604800' : rel.startsWith('assets/') ? 'public, max-age=3600' : 'no-cache';
+      const head = { 'Content-Type': MIME[ext] || 'application/octet-stream', ETag: etag, 'Cache-Control': cache, Vary: 'Accept-Encoding' };
+      if (req.headers['if-none-match'] === etag) { res.writeHead(304, head); res.end(); return; }
+      if (GZ_EXT.has(ext) && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
+        gzipFile(file, etag, (e, buf) => {
+          if (e) { res.writeHead(500); res.end(); return; }
+          res.writeHead(200, { ...head, 'Content-Encoding': 'gzip', 'Content-Length': buf.length }); res.end(buf);
+        });
+        return;
+      }
+      res.writeHead(200, { ...head, 'Content-Length': st.size });
       fs.createReadStream(file).pipe(res);
     });
     return;
