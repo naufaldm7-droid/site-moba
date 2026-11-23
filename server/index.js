@@ -38,7 +38,7 @@ ${line}
   cf.on('exit', (code) => { console.log(`[online] tunnel berhenti (kode ${code}). Server tetap jalan untuk WiFi lokal.`); onlineUrl = ''; pushLobby(); });
   const stop = () => { try { cf.kill(); } catch { /* sudah mati */ } };
   process.on('exit', stop);
-  process.on('SIGINT', () => { stop(); process.exit(0); });
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) process.on(sig, () => { stop(); process.exit(0); });
 }
 
 const MIME = {
