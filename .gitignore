@@ -6,3 +6,4 @@ Thumbs.db
 ~$*.docx
 _vendor_assets/
 tools/bin/
+__pycache__/
