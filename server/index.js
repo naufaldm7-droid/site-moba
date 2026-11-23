@@ -5,19 +5,50 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import { Game, DT } from './game.js';
 import { HEROES, PLAYABLE, SNAP_HZ, TICK_HZ, modeForSize } from '../shared/data.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = +(process.env.PORT || 3000);
+const ONLINE = process.argv.includes('--online');
+let onlineUrl = '';
+
+// Mode online: jalankan Cloudflare quick tunnel (tools/bin/cloudflared.exe) -> link https publik untuk teman
+function startTunnel() {
+  const exe = path.join(ROOT, 'tools', 'bin', process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
+  if (!fs.existsSync(exe)) { console.log('[online] cloudflared tidak ditemukan di tools/bin — jalankan START_ONLINE.bat sekali untuk mengunduhnya.'); return; }
+  const cf = spawn(exe, ['tunnel', '--no-autoupdate', '--url', `http://localhost:${PORT}`], { windowsHide: true });
+  const scan = (buf) => {
+    const m = String(buf).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+    if (m && !onlineUrl) {
+      onlineUrl = m[0];
+      const line = '*'.repeat(64);
+      console.log(`
+${line}
+  LINK ONLINE (bagikan ke teman):  ${onlineUrl}
+${line}
+`);
+      pushLobby();
+    }
+  };
+  cf.stdout.on('data', scan);
+  cf.stderr.on('data', scan);
+  cf.on('exit', (code) => { console.log(`[online] tunnel berhenti (kode ${code}). Server tetap jalan untuk WiFi lokal.`); onlineUrl = ''; pushLobby(); });
+  const stop = () => { try { cf.kill(); } catch { /* sudah mati */ } };
+  process.on('exit', stop);
+  process.on('SIGINT', () => { stop(); process.exit(0); });
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
-  '.webmanifest': 'application/manifest+json',
+  '.webmanifest': 'application/manifest+json', '.glb': 'model/gltf-binary', '.gltf': 'model/gltf+json', '.bin': 'application/octet-stream',
+  '.webp': 'image/webp', '.ktx2': 'image/ktx2', '.wasm': 'application/wasm',
 };
 const ROUTES = [
+  ['/vendor/jsm/', path.join(ROOT, 'node_modules', 'three', 'examples', 'jsm')],
   ['/vendor/', path.join(ROOT, 'node_modules', 'three', 'build')],
   ['/shared/', path.join(ROOT, 'shared')],
   ['/', path.join(ROOT, 'client')],
@@ -35,7 +66,7 @@ const server = http.createServer((req, res) => {
   const url = decodeURIComponent((req.url || '/').split('?')[0]);
   if (url === '/api/info') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ port: PORT, ips: lanIPs(), state: room.state, players: room.clients.size }));
+    res.end(JSON.stringify({ port: PORT, ips: lanIPs(), online: onlineUrl, state: room.state, players: room.clients.size }));
     return;
   }
   for (const [prefix, dir] of ROUTES) {
@@ -70,7 +101,7 @@ function hostClient() { for (const c of room.clients.values()) if (c.named) retu
 function lobbyState() {
   const host = hostClient();
   return {
-    t: 'lobby', state: room.state, size: room.size,
+    t: 'lobby', state: room.state, size: room.size, online: onlineUrl,
     players: [...room.clients.values()].filter((c) => c.named).map((c) => ({ id: c.id, name: c.name, team: c.team, hero: c.hero, host: c === host })),
   };
 }
@@ -222,4 +253,5 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('  Jika Windows Firewall bertanya, pilih "Allow" (Private network).');
   console.log('  Tutup jendela ini / Ctrl+C untuk mematikan server.');
   console.log(line);
+  if (ONLINE) { console.log('  Menyiapkan link online lewat Cloudflare Tunnel...'); startTunnel(); }
 });

@@ -75,7 +75,14 @@ function connect() {
 function onMsg(m) {
   switch (m.t) {
     case 'welcome': S.cid = m.id; S.token = m.token; store.set('token', m.token); break;
-    case 'lobby': S.lobby = m; if (!S.inGame && !S.overShown) showScreen('lobby'); renderLobby(); break;
+    case 'lobby': {
+      const linkChanged = !S.lobby || S.lobby.online !== m.online;
+      S.lobby = m;
+      if (!S.inGame && !S.overShown) showScreen('lobby');
+      else if (linkChanged) loadJoinUrls();
+      renderLobby();
+      break;
+    }
     case 'gamestart': enterGame(m); break;
     case 's': onSnap(m); break;
     case 'over': onOver(m); break;
@@ -104,8 +111,16 @@ $('inp-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btn
 async function loadJoinUrls() {
   try {
     const info = await (await fetch('/api/info', { cache: 'no-store' })).json();
-    const urls = info.ips.map((i) => `<code>http://${esc(i.ip)}:${info.port}</code>`).join(' ');
-    $('join-urls').innerHTML = urls ? `Ajak teman (WiFi/hotspot sama): ${urls}` : '';
+    const online = info.online || (S.lobby && S.lobby.online);
+    // pemain yang masuk lewat link online tidak perlu melihat IP lokal
+    const viaTunnel = location.hostname.endsWith('trycloudflare.com');
+    const urls = viaTunnel ? '' : info.ips.map((i) => `<code>http://${esc(i.ip)}:${info.port}</code>`).join(' ');
+    let html = '';
+    if (online) html += `🌐 Link online: <code id="online-url">${esc(online)}</code> <button class="btn" id="btn-copy-url" style="padding:3px 8px;font-size:11px">Salin</button>`;
+    if (urls) html += `${html ? '<br>' : ''}📶 WiFi/hotspot sama: ${urls}`;
+    $('join-urls').innerHTML = html;
+    const cb = $('btn-copy-url');
+    if (cb) cb.onclick = async () => { try { await navigator.clipboard.writeText(online); toast('Link disalin — kirim ke teman!'); } catch { toast(online, 6000); } };
   } catch { $('join-urls').textContent = ''; }
 }
 
