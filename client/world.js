@@ -15,6 +15,39 @@ const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _q2 = new THREE.Qua
 function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
 const inRects = (x, z, rects, pad = 0) => rects.some((r) => x >= r.x1 - pad && x <= r.x2 + pad && z >= r.z1 - pad && z <= r.z2 + pad);
 
+
+// ------------------------------------------------------------------ penghalang transparan otomatis
+// Piksel yang berada di antara kamera dan hero pemain di-"dither" (pola titik) supaya hero selalu terlihat.
+export const OCC = { a: { value: new THREE.Vector3() }, b: { value: new THREE.Vector3() }, on: { value: 0 } };
+export function occlude(m) {
+  if (!m || m.userData.occ) return m;
+  m.userData.occ = true;
+  const prev = m.onBeforeCompile;
+  m.onBeforeCompile = (sh, r) => {
+    if (prev) prev(sh, r);
+    sh.uniforms.uOccA = OCC.a; sh.uniforms.uOccB = OCC.b; sh.uniforms.uOccOn = OCC.on;
+    sh.vertexShader = 'varying vec3 vOccW;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+      vec4 occW = vec4(transformed, 1.0);
+      #ifdef USE_INSTANCING
+        occW = instanceMatrix * occW;
+      #endif
+      vOccW = (modelMatrix * occW).xyz;`);
+    sh.fragmentShader = 'uniform vec3 uOccA; uniform vec3 uOccB; uniform float uOccOn; varying vec3 vOccW;\n' + sh.fragmentShader.replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+      if (uOccOn > 0.5 && vOccW.y > 0.45) {
+        vec3 ab = uOccB - uOccA;
+        float t = clamp(dot(vOccW - uOccA, ab) / dot(ab, ab), 0.0, 1.0);
+        float d = length(vOccW - (uOccA + ab * t));
+        float k = smoothstep(4.2, 2.2, d) * smoothstep(0.02, 0.08, t);
+        float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        if (ign < k * 0.8) discard;
+      }`);
+  };
+  const pk = m.customProgramCacheKey ? m.customProgramCacheKey.bind(m) : null;
+  m.customProgramCacheKey = () => (pk ? pk() : '') + '|occ';
+  m.needsUpdate = true;
+  return m;
+}
+
 // ------------------------------------------------------------------ tekstur & material
 const imgCache = new Map();
 function tex(file, { srgb = false, rep = 1, aniso = 8 } = {}) {
@@ -91,6 +124,7 @@ function libMat(name, team = 2) {
     default: m = S('#888888', 0.7, 0.2);
   }
   m.name = name;
+  occlude(m);
   libCache.set(key, m);
   return m;
 }
@@ -269,7 +303,7 @@ function buildGround(R, M, S, rnd) {
   const cx = G.x + G.w / 2, cz = G.z + G.h / 2;
   // mesh tanah final (satu material buram) — tekstur diisi setelah bake
   const nrm = tex('cracked_concrete_02_nor.jpg', { rep: 1 }); nrm.repeat.set(G.w / 7, G.h / 7);
-  const gmat = new THREE.MeshStandardMaterial({ color: '#6f6052', roughness: 0.93, metalness: 0, normalMap: nrm, normalScale: new THREE.Vector2(0.8, 0.8), envMapIntensity: 0.55 });
+  const gmat = new THREE.MeshStandardMaterial({ color: '#6f6052', roughness: 0.93, metalness: 0, normalMap: nrm, normalScale: new THREE.Vector2(0.55, 0.55), envMapIntensity: 0.45 });
   const ground = new THREE.Mesh(geo, gmat);
   ground.position.set(cx, 0, cz); ground.receiveShadow = true;
   S.add(ground);
@@ -418,7 +452,7 @@ function buildGround(R, M, S, rnd) {
     gl.toneMapping = THREE.NoToneMapping;
     gl.setRenderTarget(rt); gl.clear(); gl.render(bake, cam);
     gl.setRenderTarget(prev); gl.toneMapping = tm;
-    gmat.map = rt.texture; gmat.color.set('#ffffff'); gmat.needsUpdate = true;
+    gmat.map = rt.texture; gmat.color.set('#c9c1b4'); gmat.needsUpdate = true;
     bake.traverse((o) => { if (o.material) { o.material.alphaMap?.dispose(); if (o.material.map === detail) detail.dispose(); o.material.dispose(); } });
   });
   // 6) genangan air: memantulkan langit senja (hanya petak kecil, bukan lapisan penuh)
@@ -477,6 +511,7 @@ export function buildWorld(R, M) {
   const { laneD } = buildGround(R, M, S, rnd);
   // kontainer
   const cmat = new THREE.MeshStandardMaterial({ map: tex('container_albedo.jpg', { srgb: true }), normalMap: tex('container_side_nor.jpg'), roughness: 0.6, metalness: 0.4, vertexColors: true });
+  occlude(cmat);
   cmat.map.repeat.set(1, 1);
   const conts = layoutContainers(M, rnd, laneD);
   for (const len of [12.19, 6.06]) {
@@ -506,7 +541,7 @@ export function buildWorld(R, M) {
     }
   }
   for (let i = 0; i < 34 * K; i++) {                              // ban bekas: tumpukan & berserakan
-    const p = spot(rnd() < 0.5 ? nearWall : anyWalk, 12, 0.3); if (!p) continue;
+    const p = spot(rnd() < 0.7 ? nearWall : outsideSpot, 12, 0.3); if (!p) continue;
     const n = rnd() < 0.5 ? 1 : 2 + Math.floor(rnd() * 3);
     for (let k = 0; k < n; k++) P.tyre.push({ x: p.x + (rnd() - 0.5) * 0.25, z: p.z + (rnd() - 0.5) * 0.25, yaw: rnd() * 6.28, k, s: 1.25, lean: n === 1 && rnd() < 0.3 });
   }
@@ -517,11 +552,12 @@ export function buildWorld(R, M) {
     for (const e of [0, 1]) { const x = alongX ? (e ? w.x2 + 1.5 : w.x1 - 1.5) : (w.x1 + w.x2) / 2, z = alongX ? (w.z1 + w.z2) / 2 : (e ? w.z2 + 1.5 : w.z1 - 1.5); if (ok(x, z, 0.8, 5)) P.barrier.push({ x, z, yaw: (alongX ? Math.PI / 2 : 0) + (rnd() - 0.5) * 0.5, tz: rnd() < 0.15 ? 0.5 : 0, s: 1 }); }
   }
   for (const st of M.structures) if (st.type === 'base') P.generator.push({ x: st.x + (st.team ? 5.5 : -5.5), z: st.z + 4.2, yaw: rnd() * 6.28, s: 1.5 });
-  for (let i = 0; i < 12 * K; i++) { const p = spot(rnd() < 0.5 ? nearWall : anyWalk, 14, 2.5); if (p) P.hbeam.push({ x: p.x, z: p.z, yaw: rnd() * 6.28 }); }
-  for (let i = 0; i < 9 * K; i++) { const p = spot(rnd() < 0.5 ? nearWall : anyWalk, 14, 2.5); if (p) P.pipes.push({ x: p.x, z: p.z, yaw: rnd() * 6.28 }); }
+  for (let i = 0; i < 12 * K; i++) { const p = spot(rnd() < 0.5 ? nearWall : outsideSpot, 14, 2.5); if (p) P.hbeam.push({ x: p.x, z: p.z, yaw: rnd() * 6.28 }); }
+  for (let i = 0; i < 9 * K; i++) { const p = spot(rnd() < 0.5 ? nearWall : outsideSpot, 14, 2.5); if (p) P.pipes.push({ x: p.x, z: p.z, yaw: rnd() * 6.28 }); }
   for (let i = 0; i < 9 * K; i++) { const p = spot(nearWall, 14, 1.5); if (p) P.reel.push({ x: p.x, z: p.z, yaw: rnd() * 6.28, tz: rnd() < 0.2 ? Math.PI / 2 : 0, y: 0 }); }
-  for (let i = 0; i < 30 * K; i++) { const p = spot(rnd() < 0.5 ? nearWall : anyWalk, 12, 0.5); if (p) for (let k = 0; k < 1 + Math.floor(rnd() * 4); k++) P.pallet.push({ x: p.x + (rnd() - 0.5) * 0.15, z: p.z + (rnd() - 0.5) * 0.15, yaw: (rnd() - 0.5) * 0.3 + (k ? 0 : rnd() * 6.28), y: k * 0.16 }); }
+  for (let i = 0; i < 30 * K; i++) { const p = spot(rnd() < 0.5 ? nearWall : outsideSpot, 12, 0.5); if (p) for (let k = 0; k < 1 + Math.floor(rnd() * 4); k++) P.pallet.push({ x: p.x + (rnd() - 0.5) * 0.15, z: p.z + (rnd() - 0.5) * 0.15, yaw: (rnd() - 0.5) * 0.3 + (k ? 0 : rnd() * 6.28), y: k * 0.16 }); }
   const J = junkGeos();
+  for (const k of ['hbeam', 'pipes', 'reel', 'pallet']) occlude(J[k][1]);
   for (const k of ['hbeam', 'pipes', 'reel', 'pallet']) if (P[k].length) S.add(instanced(J[k][0], J[k][1], P[k], { shadow: k === 'reel' || k === 'pipes' }));
   // model foto-scan (async)
   const world = S;
@@ -535,6 +571,7 @@ export function buildWorld(R, M) {
       if (!o.isMesh) return;
       const g = o.geometry.clone(); g.applyMatrix4(o.matrixWorld); g.translate(0, -box.min.y, 0);
       const list = items.map((it) => fit(it, size));
+      occlude(o.material);
       const im = instanced(g, o.material, list, { shadow: name === 'barrel' || name === 'barrier' || name === 'crate' || name === 'generator' });
       world.add(im);
     });
@@ -597,29 +634,29 @@ async function buildPlants(R, M, world, rnd, laneD) {
   const tintLow = () => ['#b0c088', '#c8c890', '#9ab070', '#d0c8a0'][Math.floor(rnd() * 4)];
   const dens = R.quality === 'low' ? 0.5 : R.quality === 'med' ? 0.75 : 1;
   // semak sembunyi: ilalang tinggi rapat bercampur jelatang & gulma
-  const TALL = [['grassTallA', 0.34, 1.1, 1.7], ['grassTallB', 0.3, 1.0, 1.6], ['grassMidA', 0.14, 0.8, 1.2], ['grassDryA', 0.1, 0.8, 1.2], ['nettleA', 0.05, 0.7, 1.0], ['weedA', 0.05, 0.7, 1.0], ['nettleB', 0.02, 0.6, 0.9]];   // ilalang setinggi pinggang-dada, tidak menutupi layar
+  const TALL = [['grassTallA', 0.4, 1.0, 1.45], ['grassTallB', 0.36, 0.95, 1.4], ['grassMidA', 0.14, 0.75, 1.05], ['grassDryA', 0.1, 0.7, 1.0]];   // ilalang setinggi pinggang-dada, tidak menutupi layar
   for (const b of M.bushes) {
     const n = (b.x2 - b.x1) * (b.z2 - b.z1) * 2.6 * dens;
     for (let i = 0; i < n; i++) { const [k, h] = pick(TALL); add(k, b.x1 + 0.2 + rnd() * (b.x2 - b.x1 - 0.4), b.z1 + 0.2 + rnd() * (b.z2 - b.z1 - 0.4), h, tintTall()); }
-    for (let i = 0; i < n * 0.25; i++) { const [k, h] = pick(TALL); add(k, b.x1 - 0.8 + rnd() * (b.x2 - b.x1 + 1.6), b.z1 - 0.8 + rnd() * (b.z2 - b.z1 + 1.6), h * 0.6, tintTall()); }
+    for (let i = 0; i < n * 0.15; i++) { const [k, h] = pick(TALL); add(k, b.x1 - 0.5 + rnd() * (b.x2 - b.x1 + 1), b.z1 - 0.5 + rnd() * (b.z2 - b.z1 + 1), h * 0.5, tintTall()); }
   }
   // gulma liar: di retakan beton, kaki kontainer, tepi area
-  const LOW = [['grassSmallA', 0.25, 0.25, 0.5], ['grassDryB', 0.2, 0.3, 0.6], ['dandelionA', 0.14, 0.2, 0.35], ['dandelionB', 0.1, 0.2, 0.35], ['sorrelA', 0.1, 0.3, 0.55], ['sorrelB', 0.08, 0.3, 0.5], ['weedB', 0.08, 0.4, 0.8], ['grassMidA', 0.05, 0.5, 0.8]];
+  const LOW = [['grassSmallA', 0.35, 0.15, 0.3], ['grassDryB', 0.3, 0.18, 0.32], ['dandelionA', 0.15, 0.12, 0.22], ['dandelionB', 0.1, 0.12, 0.22], ['sorrelB', 0.1, 0.15, 0.25]];
   let area = 0; for (const w of M.walk) area += (w.x2 - w.x1) * (w.z2 - w.z1);
-  for (let i = 0; i < area / 9 * dens; i++) {
+  for (let i = 0; i < area / 22 * dens; i++) {
     const w = M.walk[Math.floor(rnd() * M.walk.length)];
     let x = w.x1 + rnd() * (w.x2 - w.x1), z = w.z1 + rnd() * (w.z2 - w.z1);
     if (rnd() < 0.6) { if (rnd() < 0.5) x = Math.round(x / 6) * 6 + (rnd() - 0.5) * 0.3; else z = Math.round(z / 6) * 6 + (rnd() - 0.5) * 0.3; }   // tumbuh di sambungan pelat
     const d = laneD(x, z);
-    if (d < M.laneWidth / 2 - 1.5 && rnd() < 0.8) continue;
+    if (d < M.laneWidth / 2 + 0.5) continue;                       // lane bersih
     if (inRects(x, z, M.walls, 0.1) || inRects(x, z, M.fountain, 1.5)) continue;
     const [k, h] = pick(LOW); add(k, x, z, h, tintLow());
   }
-  const MID = [['grassMidA', 0.3, 0.5, 1.0], ['weedA', 0.2, 0.6, 1.1], ['grassDryA', 0.2, 0.5, 0.9], ['nettleB', 0.15, 0.6, 1.0], ['sorrelA', 0.15, 0.3, 0.6]];
+  const MID = [['grassMidA', 0.35, 0.35, 0.7], ['grassDryA', 0.3, 0.35, 0.65], ['sorrelA', 0.2, 0.2, 0.4], ['weedB', 0.15, 0.25, 0.45]];
   for (const w of M.walls) {
     const per = 2 * ((w.x2 - w.x1) + (w.z2 - w.z1));
-    for (let i = 0; i < per * 0.9 * dens; i++) {
-      const side = Math.floor(rnd() * 4), o = 0.15 + rnd() * 0.5;
+    for (let i = 0; i < per * 0.55 * dens; i++) {
+      const side = Math.floor(rnd() * 4), o = 0.1 + rnd() * 0.35;
       const x = side < 2 ? w.x1 + rnd() * (w.x2 - w.x1) : side === 2 ? w.x1 - o : w.x2 + o, z = side >= 2 ? w.z1 + rnd() * (w.z2 - w.z1) : side === 0 ? w.z1 - o : w.z2 + o;
       const [k, h] = pick(MID); add(k, x, z, h, tintLow());
     }
@@ -630,7 +667,8 @@ async function buildPlants(R, M, world, rnd, laneD) {
       const side = Math.floor(rnd() * 4), o = 0.2 + rnd() * 1.4, t = rnd();
       const x = side < 2 ? w.x1 + (w.x2 - w.x1) * t : side === 2 ? w.x1 - o : w.x2 + o, z = side >= 2 ? w.z1 + (w.z2 - w.z1) * t : side === 0 ? w.z1 - o : w.z2 + o;
       if (inRects(x, z, M.walk, 0) || inRects(x, z, M.fountain, 3)) continue;
-      const [k, h] = pick(rnd() < 0.4 ? TALL : MID); add(k, x, z, h * 0.8, tintTall());
+      const WILD = [['nettleA', 0.3, 0.8, 1.3], ['weedA', 0.3, 0.7, 1.2], ['grassTallA', 0.4, 1.0, 1.6]];
+      const [k, h] = pick(rnd() < 0.5 ? WILD : MID); add(k, x, z, h, tintTall());
     }
   }
   for (const [kind, items] of Object.entries(lists)) {
@@ -644,6 +682,7 @@ async function buildPlants(R, M, world, rnd, laneD) {
         float sway = sin(uTime * 1.6 + wp.x * 0.35 + wp.z * 0.27) * 0.5 + sin(uTime * 3.1 + wp.x * 1.3) * 0.2;
         transformed.x += sway * 0.12 * uH * k; transformed.z += sway * 0.07 * uH * k;`);
     };
+    occlude(m);
     const im = instanced(geo, m, items, { shadow: false });
     im.receiveShadow = true;
     world.add(im);

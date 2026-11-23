@@ -53,10 +53,23 @@ export async function makeHero(key) {
     mats.push(m);
     (byName[m.name] = byName[m.name] || []).push(m);
   });
+  // rim light (cahaya tepi) agar hero menonjol dari latar, warna diatur per tim di renderer
+  const rim = { value: new THREE.Color(0, 0, 0) };
+  for (const m of mats) {
+    const prev = m.onBeforeCompile;
+    m.onBeforeCompile = (sh, r) => {
+      if (prev) prev(sh, r);
+      sh.uniforms.uRim = rim;
+      sh.fragmentShader = 'uniform vec3 uRim;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        totalEmissiveRadiance += uRim * pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 2.6);`);
+    };
+    m.customProgramCacheKey = () => 'rim';
+    m.needsUpdate = true;
+  }
   const mixer = new THREE.AnimationMixer(root);
   const actions = {};
   for (const [n, c] of CLIPS) actions[n] = mixer.clipAction(c);
-  return { root, mixer, actions, mats, byName };
+  return { root, mixer, actions, mats, byName, rim };
 }
 
 // pilihan klip per keadaan

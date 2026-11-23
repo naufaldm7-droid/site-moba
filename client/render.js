@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { MAPS, HEROES, STRUCT, SNAP_HZ, laneProject } from '/shared/data.js';
 import { makeHero, clipFor, ONE_SHOT, applySkin, roleColor, skillMove, runSpeedRef, FULL_BODY } from './models.js';
-import { buildWorld as buildWorldReal, setupEnvironment, makeProp } from './world.js';
+import { buildWorld as buildWorldReal, setupEnvironment, makeProp, OCC } from './world.js';
 import { EffectComposer } from '/vendor/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '/vendor/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '/vendor/jsm/postprocessing/UnrealBloomPass.js';
@@ -878,6 +878,7 @@ export class Renderer {
     r.headY = Math.min(3.6, Math.max(2.3, new THREE.Box3().setFromObject(m.root).max.y * 1.35)) + 0.32;   // tinggi kepala per hero (untuk label)
     const sk = r.d.sk || 0;
     applySkin(m, r.s, HEROES[r.s], sk);
+    r.rim = m.rim; this.setRim(r);
     r.skin = sk;
     r.skinCol = sk === 2 ? '#ffd060' : sk === 3 ? '#3fe0ff' : roleColor(r.s, HEROES[r.s]);
     if (sk >= 2) {
@@ -890,6 +891,24 @@ export class Renderer {
     r.alpha = 1;
     r.anim = { ...m, cur: null, curName: '', oneShotT: 0, alt: false, lastAtk: -9, lastCast: -9 };
     if (this.onModelReady) this.onModelReady(r);
+  }
+
+  setRim(r) {
+    if (!r.rim) return;
+    const own = r.id === this.myId, ally = r.tm === this.myTeam;
+    r.rim.value.set(own ? '#ffcf4a' : ally ? '#3d8bff' : '#ff3a2a').multiplyScalar(own ? 0.85 : 0.7);
+  }
+
+  // garis tebasan untuk serangan jarak dekat
+  slashFx(r, big = false) {
+    if (!this.slashGeo) this.slashGeo = new THREE.RingGeometry(0.9, 1.9, 24, 1, -Math.PI / 2 - 1.25, 2.5);
+    const col = new THREE.Color(r.skinCol || '#ffffff');
+    const m = new THREE.MeshBasicMaterial({ color: col.multiplyScalar(2.2), transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+    const g = new THREE.Group(), s = new THREE.Mesh(this.slashGeo, m);
+    s.rotation.x = -Math.PI / 2; g.add(s);
+    g.position.set(r.px, 1.25, r.pz); g.rotation.set(0, r.f, (r.slashFlip = !r.slashFlip) ? 0.35 : -0.35);
+    const sc = big ? 1.6 : 1.15;
+    this.addFx(g, 0.2, (k) => { const q = sc * (0.85 + k * 0.35); g.scale.set(q, q, q); s.rotation.z = (r.slashFlip ? 1 : -1) * k * 0.6; m.opacity = 0.85 * (1 - k * k); }, () => m.dispose());
   }
 
   playClip(r, name, { fade = 0.14, speed = 1, restart = false } = {}) {
@@ -942,7 +961,7 @@ export class Renderer {
       this.playOver(r, null);
       this.playClip(r, name, { speed, restart, fade: state === 'death' ? 0.08 : 0.14 });
     }
-    A.mixer.update(dt);
+    A.mixer.update(now < (A.stopUntil || 0) ? dt * 0.08 : dt);   // hitstop: animasi tertahan sesaat saat pukulan kena
     // jejak cahaya senjata / tangan saat beraksi + debu langkah saat lari kencang
     if (acting && !dead) {
       if (!A.hand) A.hand = A.root.getObjectByName('hand_r') || A.root;
@@ -1001,7 +1020,7 @@ export class Renderer {
   setMe(id, team) {
     this.myId = id; this.myTeam = team;
     this.camYaw = team === 1 ? Math.PI : 0;
-    for (const r of this.ents.values()) if (r.lbl) this.colorLabel(r);
+    for (const r of this.ents.values()) { if (r.lbl) this.colorLabel(r); this.setRim(r); }
   }
 
   reset() {
@@ -1061,6 +1080,7 @@ export class Renderer {
         const r = E(e.id); if (!r) break;
         r.atkT = now;
         if (r.k === 'h' && HEROES[r.s].melee) {
+          this.slashFx(r);
           const t = E(e.tg); if (t) this.burst(t.px, 1.1, t.pz, 5, r.s === 'drafter' ? ['#3fd2ff', '#ffffff'] : ['#ffd27a', '#ffffff'], { speed: 3, up: 2, life: 0.3, size: 0.08 });
         }
         if (r.k === 'm' && r.s === 'cat') { const t = E(e.tg); if (t) this.burst(t.px, 0.6, t.pz, 4, ['#ffb03a', '#ff6a1a'], { speed: 2.5, up: 2, life: 0.25, size: 0.07 }); }
@@ -1083,6 +1103,11 @@ export class Renderer {
       case 'dmg': {
         const r = E(e.id); if (!r) break;
         if (r.k === 'h' && e.v > 25) r.flashT = now;
+        const src = e.s ? E(e.s) : null;
+        const heavy = e.c || e.v > 220;
+        if (src && src.anim && (HEROES[src.s].melee || heavy)) src.anim.stopUntil = now + (heavy ? 0.09 : 0.05);
+        if (r.anim && heavy) r.anim.stopUntil = now + 0.07;
+        if ((e.s === this.myId && heavy) || (e.id === this.myId && e.v > 120)) this.shake = Math.max(this.shake || 0, heavy ? 0.16 : 0.1);
         const mine = e.s === this.myId || e.id === this.myId;
         if (!mine && r.k !== 'h') break;
         const cls = e.c ? 'crit' : e.k === 'magic' ? 'magic' : e.k === 'true' ? 'true' : (e.id === this.myId ? 'hurt' : '');
@@ -1377,7 +1402,7 @@ export class Renderer {
     const back = dist * 0.66, up = dist * 0.94; // sudut ~55° dengan lensa 36°: nyaman, distorsi kecil
     const yaw = this.camYaw;
     let sx = 0, sz = 0;
-    if (this.shake > 0) { this.shake -= dt; sx = rand(-0.25, 0.25) * this.shake * 2; sz = rand(-0.25, 0.25) * this.shake * 2; }
+    if (this.shake > 0) { this.shake = Math.min(this.shake, 0.5) - dt; const a = Math.max(0, this.shake) * 1.6; sx = Math.sin(now * 63) * a * 0.3; sz = Math.cos(now * 57) * a * 0.3; }
     // kamera di sisi +z untuk BIRU (musuh di kanan layar), sisi -z untuk MERAH (diputar 180°)
     const sgn = yaw ? -1 : 1;
     const av = this.map ? this.map.ahead : [1, 0]; // geser pandangan sedikit ke arah musuh
@@ -1392,6 +1417,8 @@ export class Renderer {
       if (fps < 33 && this.time > 8 && !document.hidden) this.lowN = (this.lowN || 0) + 1; else this.lowN = 0;
       if (this.lowN >= 2 && this.quality !== 'low') { this.lowN = 0; this.setQuality(this.quality === 'high' ? 'med' : 'low', false); if (this.onQuality) this.onQuality(this.quality, fps); }
     }
+    const meO = this.ents.get(this.myId);
+    if (meO && !(meO.d.fl & 64)) { OCC.a.value.set(meO.px, 1.2, meO.pz); OCC.b.value.copy(this.camera.position); OCC.on.value = 1; } else OCC.on.value = 0;
     if (this.sun.castShadow) {
       const t = this.camTarget;
       this.sun.target.position.set(t.x, 0, t.z); this.sun.position.set(t.x - 46, 34, t.z + 20);

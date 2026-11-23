@@ -273,3 +273,7 @@ table.sbt tr.me { background: rgba(242,194,48,.08); }
 .show-move { position: absolute; left: 0; right: 0; bottom: 6px; text-align: center; font: 800 14px var(--head); letter-spacing: 1px; color: #fff; text-shadow: 0 0 10px rgba(255,200,80,.7), 0 2px 2px #000; }
 .rolechip { margin-top: 6px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: rgba(242,194,48,.08); font-size: 11px; line-height: 1.4; color: var(--mut); }
 .rolechip b { color: var(--hz); font-family: var(--head); }
+
+/* vignette sinematik: fokus ke tengah layar, tepi gelap hangat */
+body.ingame::after { content: ''; position: fixed; inset: 0; z-index: 1; pointer-events: none;
+  background: radial-gradient(ellipse 75% 70% at 50% 52%, rgba(0,0,0,0) 55%, rgba(18,10,6,.28) 82%, rgba(12,6,3,.55) 100%); }
