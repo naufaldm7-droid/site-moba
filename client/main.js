@@ -297,7 +297,7 @@ function uiEvent(e) {
     case 'boss':
       if (e.k === 'overtime') { banner('OVERTIME!', 'Deadline proyek — struktur makin rapuh'); break; }
       play(e.k === 'apexcat' ? 'SFX_Boss_ApexCat_Roar' : 'SFX_Boss_Cerberus_Howl', 0.9);
-      banner(e.k === 'apexcat' ? 'THE APEX ALLEY CAT' : 'CERBERUS OF THE YARD', 'muncul di Stockyard!');
+      banner(e.k === 'apexcat' ? 'RUST DOZER D9' : 'IRON CLAW EXCAVATOR', 'mesin tua menyala sendiri!');
       break;
     case 'bosskill': banner(e.team === S.team ? 'BOSS DIKALAHKAN!' : 'LAWAN MENGAMBIL BOSS', e.msg); break;
     case 'struct': banner(e.team === S.team ? 'STRUKTUR KITA RUNTUH!' : 'STRUKTUR LAWAN RUNTUH!', e.msg); break;

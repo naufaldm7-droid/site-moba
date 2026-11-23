@@ -387,7 +387,7 @@ export class Game {
           if (t.type === 'apexcat' && !h.dead) this.shield(h, 450 + 30 * h.lvl, 60);
         }
         if (t.type === 'cerberus') this.spawnAllyCerberus(team, t.pit || t);
-        this.ev({ t: 'bosskill', k: t.type, team, msg: t.type === 'apexcat' ? `Tim ${team === 0 ? 'BIRU' : 'MERAH'} mengalahkan Apex Alley Cat — Shield Debu Beton aktif!` : `Tim ${team === 0 ? 'BIRU' : 'MERAH'} menjinakkan Cerberus — ia ikut push lane!` });
+        this.ev({ t: 'bosskill', k: t.type, team, msg: t.type === 'apexcat' ? `Tim ${team === 0 ? 'BIRU' : 'MERAH'} melumpuhkan Rust Dozer — Shield Debu Beton aktif!` : `Tim ${team === 0 ? 'BIRU' : 'MERAH'} membajak Iron Claw Excavator — ia ikut push lane!` });
       }
       if (t.pit) { t.pit.bossId = 0; t.pit.next = now + (t.pit.respawn ?? B.respawn); }
     }

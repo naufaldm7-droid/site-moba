@@ -1,7 +1,8 @@
 // SITE CLASH — renderer Three.js: Abandoned Container Laydown Yard (golden hour), model prosedural ringan untuk HP.
 import * as THREE from 'three';
 import { MAPS, HEROES, STRUCT, SNAP_HZ, laneProject } from '/shared/data.js';
-import { makeHero, clipFor, ONE_SHOT, applySkin, roleColor } from './models.js';
+import { makeHero, clipFor, ONE_SHOT, applySkin, roleColor, skillMove, runSpeedRef } from './models.js';
+import { buildWorld as buildWorldReal, setupEnvironment, makeProp } from './world.js';
 import { EffectComposer } from '/vendor/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '/vendor/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '/vendor/jsm/postprocessing/UnrealBloomPass.js';
@@ -541,11 +542,11 @@ export class Renderer {
     this.gl.setPixelRatio(Math.min(window.devicePixelRatio || 1, mobile ? 1.5 : 2));
     this.gl.outputColorSpace = THREE.SRGBColorSpace;
     this.gl.toneMapping = THREE.ACESFilmicToneMapping;
-    this.gl.toneMappingExposure = 1.05;
+    this.gl.toneMappingExposure = 1.2;
     this.scene = new THREE.Scene();
     this.scene.background = skyTexture();
-    this.scene.fog = new THREE.Fog(0x6b4a3a, 45, 95);
-    this.camera = new THREE.PerspectiveCamera(42, 1, 0.5, 220);
+    this.scene.fog = new THREE.Fog(0x8a6a58, 60, 150);
+    this.camera = new THREE.PerspectiveCamera(36, 1, 0.5, 260);
     this.camTarget = new THREE.Vector3(20, 0, 50);
     this.camYaw = 0; // 0 = biru (musuh di kanan), PI = merah
     this.zoom = 1;
@@ -557,12 +558,18 @@ export class Renderer {
     this.time = 0;
     this.tex = { corr: corrugatedTexture(), sign: [labelTexture('SITE OFFICE • TIM BIRU', '#123a7a', '#ffffff'), labelTexture('SITE OFFICE • TIM MERAH', '#7a1414', '#ffffff')] };
     // cahaya golden hour (tetap), dunia dibangun per map lewat setMap()
-    this.scene.add(new THREE.HemisphereLight(0xffd9b0, 0x3a3540, 1.25));
-    const sun = new THREE.DirectionalLight(0xffb070, 2.4);
-    sun.position.set(-60, 45, 30);
-    this.scene.add(sun);
-    const fill = new THREE.DirectionalLight(0x8aa6ff, 0.35);
+    this.scene.add(new THREE.HemisphereLight(0xffe6cc, 0x5a4e44, 1.0));
+    const sun = new THREE.DirectionalLight(0xffc998, 3.3);
+    sun.position.set(-46, 34, 20);
+    sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30, near: 1, far: 150 });
+    sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.05;
+    this.scene.add(sun, sun.target);
+    this.sun = sun;
+    const fill = new THREE.DirectionalLight(0x8aa6ff, 0.3);
     fill.position.set(50, 30, -40); this.scene.add(fill);
+    this.gl.shadowMap.type = THREE.PCFShadowMap;
+    setupEnvironment(this);
     this.map = null; this.world = null;
     this.setMap('blitz');
     this.initParticles();
@@ -577,19 +584,22 @@ export class Renderer {
     addEventListener('resize', () => this.resize());
   }
 
-  setQuality(q) {
+  setQuality(q, persist = true) {
     this.quality = q;
     const mobile = matchMedia('(pointer: coarse)').matches;
-    this.gl.setPixelRatio(Math.min(window.devicePixelRatio || 1, q === 'high' ? 2 : q === 'med' ? 1.25 : 1));
-    if (q === 'low') { this.composer = null; }
+    this.gl.setPixelRatio(q === 'high' ? Math.min(window.devicePixelRatio || 1, 1.5) : q === 'med' ? 1 : Math.min(1, (window.devicePixelRatio || 1) * 0.8));
+    this.gl.shadowMap.enabled = q !== 'low';
+    if (this.sun) { this.sun.castShadow = q !== 'low'; this.sun.shadow.mapSize.set(q === 'high' ? 2048 : 1024, q === 'high' ? 2048 : 1024); if (this.sun.shadow.map) { this.sun.shadow.map.dispose(); this.sun.shadow.map = null; } }
+    if (q !== 'high') { this.composer = null; }   // bloom hanya di kualitas tinggi (mahal di GPU terintegrasi/HP)
     else {
       this.composer = new EffectComposer(this.gl);
       this.composer.addPass(new RenderPass(this.scene, this.camera));
-      this.bloomPass = new UnrealBloomPass(new THREE.Vector2(256, 256), q === 'high' ? 0.7 : 0.6, 0.5, 0.92);
+      this.bloomPass = new UnrealBloomPass(new THREE.Vector2(256, 256), q === 'high' ? 0.55 : 0.5, 0.45, 1.6);
       this.composer.addPass(this.bloomPass);
       this.composer.addPass(new OutputPass());
     }
-    try { localStorage.setItem('sc_quality', q); } catch { /* abaikan */ }
+    if (persist) { try { localStorage.setItem('sc_quality', q); } catch { /* abaikan */ } }
+    this.fpsAcc = 0; this.fpsN = 0;
     void mobile;
     if (this.W) this.resize();
   }
@@ -598,7 +608,7 @@ export class Renderer {
     const w = this.canvas.clientWidth || innerWidth, h = this.canvas.clientHeight || innerHeight;
     this.gl.setSize(w, h, false);
     if (this.composer) {
-      this.composer.setPixelRatio(this.gl.getPixelRatio() * (this.quality === 'high' ? 1 : 0.6));
+      this.composer.setPixelRatio(this.gl.getPixelRatio() * (this.quality === 'high' ? 0.75 : 0.6));
       this.composer.setSize(w, h);
     }
     this.camera.aspect = w / h;
@@ -626,163 +636,7 @@ export class Renderer {
     this.buildWorld(M);
   }
 
-  buildWorld(M) {
-    const S = this.world;
-    const G = groundArea(M);
-    // tanah
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(G.w, G.h), new THREE.MeshStandardMaterial({ map: groundTexture(M), roughness: 0.9, metalness: 0.05 }));
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.set(G.x + G.w / 2, 0, G.z + G.h / 2);
-    S.add(ground);
-    // kontainer (instanced)
-    const R = rng(42);
-    const list = [];
-    const PAL = [0xb5562a, 0x9c4a26, 0x3e5f8a, 0x4f6b3a, 0x8e2f25, 0x7b7f86, 0x2f4d6e];
-    const PALC = { orange: [0xb5562a, 0xa34c25, 0xc0632e], blue: [0x3e5f8a, 0x35577f, 0x4a6c96], green: [0x4f6b3a, 0x5b7542, 0x445f33] };
-    const put = (x, z, len, rotY, lvl, color) => list.push({ x, z, len, rotY, y: 1.3 + lvl * 2.6, color });
-    for (const w of M.walls) {
-      const L = w.x2 - w.x1, D = w.z2 - w.z1;
-      const alongX = L >= D;
-      const len = alongX ? L : D, dep = alongX ? D : L;
-      const rows = Math.max(1, Math.round(dep / 2.45));
-      const n = Math.max(1, Math.round(len / 12.2));
-      for (let lvl = 0; lvl < w.stack; lvl++) for (let r = 0; r < rows; r++) for (let i = 0; i < n; i++) {
-        if (lvl > 0 && R() < 0.3) continue;
-        const pal = PALC[w.c] || PAL;
-        const a = (i + 0.5) / n, b = (r + 0.5) / rows;
-        const x = alongX ? w.x1 + L * a : w.x1 + L * b, z = alongX ? w.z1 + D * b : w.z1 + D * a;
-        put(x, z, len / n - 0.15, alongX ? 0 : Math.PI / 2, lvl, pal[Math.floor(R() * pal.length)]);
-      }
-    }
-    // dinding keliling: kontainer otomatis di luar setiap tepi area main
-    const outside = (x, z) => !inAnyRect(x, z, M.walk, 0.4);
-    for (const w of M.walk) {
-      const edges = [
-        [w.x1, w.z1, w.x2, w.z1, 0, -1], [w.x1, w.z2, w.x2, w.z2, 0, 1],
-        [w.x1, w.z1, w.x1, w.z2, -1, 0], [w.x2, w.z1, w.x2, w.z2, 1, 0],
-      ];
-      for (const [ax, az, bx, bz, nx, nz] of edges) {
-        const L = Math.hypot(bx - ax, bz - az), alongX = az === bz;
-        for (let p = 0; p < L; p += 6.4) {
-          const t = Math.min(L, p + 3.05);
-          const cx = ax + (bx - ax) * t / L, cz = az + (bz - az) * t / L;
-          for (let row = 0; row < 2; row++) {
-            const off = 1.5 + row * 2.6;
-            const x = cx + nx * off, z = cz + nz * off;
-            if (!outside(x, z) || !outside(x - nx * 1.2, z - nz * 1.2)) continue;
-            if (row === 1 && R() < 0.4) continue;
-            const lv = 1 + Math.floor(R() * 2.2);
-            for (let l = 0; l < lv; l++) put(x + rand(-0.2, 0.2), z + rand(-0.2, 0.2), 6.1, (alongX ? 0 : Math.PI / 2) + rand(-0.04, 0.04), l, PAL[Math.floor(R() * PAL.length)]);
-          }
-        }
-      }
-    }
-    const cm = new THREE.MeshStandardMaterial({ map: this.tex.corr, roughness: 0.7, metalness: 0.25 });
-    const inst = new THREE.InstancedMesh(GEO.box, cm, list.length);
-    list.forEach((c, i) => {
-      tmpQ.setFromAxisAngle(UP, c.rotY);
-      tmpM.compose(tmpV.set(c.x, c.y, c.z), tmpQ, tmpS.set(c.len, 2.6, 2.44));
-      inst.setMatrixAt(i, tmpM);
-      inst.setColorAt(i, tmpC.setHex(c.color));
-    });
-    S.add(inst);
-    // gantry crane kuning (ikon area laydown) di luar area main
-    const yel = mat(0xd9a21b, { metal: 0.4, rough: 0.5 });
-    const cranes = M.big ? [[40, -7, 0], [120, 167, 0], [-7, 80, Math.PI / 2]] : [[30, 66, 0], [110, 66, 0]];
-    for (const [x, z, ry] of cranes) {
-      const gc = new THREE.Group(); gc.position.set(x, 0, z); gc.rotation.y = ry; S.add(gc);
-      for (const gx of [-9, 9]) for (const gz of [-2, 2]) gc.add(box(yel, 0.6, 10, 0.6, gx, 5, gz));
-      gc.add(box(yel, 20, 0.9, 0.8, 0, 10.2, -2)); gc.add(box(yel, 20, 0.9, 0.8, 0, 10.2, 2));
-      gc.add(box(mat(0x333333), 1.6, 1.2, 4.6, 3, 9.6, 0));
-      gc.add(strut(mat(0x222222), [3, 9, 0], [3, 5, 0], 0.03));
-      gc.add(mesh(GEO.torus, mat(0xd9a21b), 0.3, 0.3, 0.3, 3, 4.8, 0));
-    }
-    // dekorasi non-tabrak: drum oli, tumpukan H-beam, gulungan kabel — di luar lane, jauh dari struktur
-    const drumM = [mat(0xa8322a, { metal: 0.4 }), mat(0x3a6aa8, { metal: 0.4 }), mat(0xd9a21b, { metal: 0.4 })];
-    const laneDist = (x, z) => Math.min(...Object.values(M.laneData).map((L) => laneProject(L, x, z).d));
-    const busy = [...M.structures, ...M.pits, ...M.spawn];
-    let area = 0; for (const w of M.walk) area += (w.x2 - w.x1) * (w.z2 - w.z1);
-    let placed = 0;
-    for (let tries = 0; tries < 400 && placed < area / 450; tries++) {
-      const w = M.walk[Math.floor(R() * M.walk.length)];
-      const x = w.x1 + 1.5 + R() * (w.x2 - w.x1 - 3), z = w.z1 + 1.5 + R() * (w.z2 - w.z1 - 3);
-      if (laneDist(x, z) < M.laneWidth / 2 + 1.5 || inAnyRect(x, z, M.walls, 1.5) || inAnyRect(x, z, M.bushes, 1)) continue;
-      if (busy.some((b) => Math.hypot(b.x - x, b.z - z) < 9)) continue;
-      placed++;
-      const k = Math.floor(R() * 3);
-      if (k === 0) for (let i = 0; i < 3; i++) S.add(mesh(GEO.cyl, drumM[Math.floor(R() * 3)], 0.3, 0.9, 0.3, x + (i % 2) * 0.65, 0.45, z + (i > 1 ? 0.6 : 0)));
-      else if (k === 1) { const st = mat(0x7a4f32, { metal: 0.5, rough: 0.6 }); const ry = R() * 3; for (let i = 0; i < 4; i++) { const b = box(st, 3.2, 0.3, 0.35, x + Math.sin(ry) * (i % 2) * 0.45, 0.25 + Math.floor(i / 2) * 0.32, z + Math.cos(ry) * (i % 2) * 0.45); b.rotation.y = ry; S.add(b); } }
-      else { S.add(rx(mesh(GEO.cyl, mat(0x8a6238), 0.7, 0.6, 0.7, x, 0.7, z), Math.PI / 2)); S.add(rx(mesh(GEO.cyl, mat(0x222222), 0.55, 0.62, 0.55, x, 0.7, z), Math.PI / 2)); }
-    }
-    // jersey barrier kuning-hitam di ujung tumpukan kontainer
-    const barTex = canvasTex(128, 32, (g2, w, h) => { for (let i = -2; i < 10; i++) { g2.fillStyle = i % 2 ? '#e2b21c' : '#1e1e1e'; g2.beginPath(); g2.moveTo(i * 16, h); g2.lineTo(i * 16 + 16, h); g2.lineTo(i * 16 + 32, 0); g2.lineTo(i * 16 + 16, 0); g2.fill(); } });
-    const barM = new THREE.MeshStandardMaterial({ map: barTex, roughness: 0.7 });
-    for (const w of M.walls) {
-      const alongX = (w.x2 - w.x1) >= (w.z2 - w.z1);
-      const b = box(barM, 2.4, 0.9, 0.5, alongX ? w.x2 + 1.4 : (w.x1 + w.x2) / 2, 0.45, alongX ? (w.z1 + w.z2) / 2 : w.z2 + 1.4);
-      if (!alongX) b.rotation.y = Math.PI / 2;
-      if (laneDist(b.position.x, b.position.z) > M.laneWidth / 2 + 1) S.add(b);
-    }
-    // ilalang (instanced, bergoyang angin)
-    this.buildGrass(M);
-    // tiang lampu sorot di luar area main
-    const pole = mat(0x555555, { metal: 0.6 });
-    const lamp = mat(0x222222, { emissive: 0xfff0c0, ei: 1.5 });
-    const lamps = M.big ? [[40, 3.5], [80, 3.5], [120, 3.5], [40, 156.5], [80, 156.5], [120, 156.5], [3.5, 60], [3.5, 100], [156.5, 60], [156.5, 100]] : [[35, 59.6], [70, 59.6], [105, 59.6]];
-    for (const [x, z] of lamps) { S.add(box(pole, 0.2, 9, 0.2, x, 4.5, z)); S.add(box(lamp, 1.4, 0.4, 0.4, x, 9, z)); }
-  }
-
-  buildGrass(M) {
-    const R = rng(99);
-    const tex = grassTexture();
-    const geo = new THREE.BufferGeometry();
-    // 2 bidang bersilang
-    const pos = [], uv = [], idx = [];
-    for (let k = 0; k < 2; k++) {
-      const a = k * Math.PI / 2, cx = Math.cos(a) * 0.5, cz = Math.sin(a) * 0.5, b = pos.length / 3;
-      pos.push(-cx, 0, -cz, cx, 0, cz, cx, 1, cz, -cx, 1, -cz);
-      uv.push(0, 0, 1, 0, 1, 1, 0, 1);
-      idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
-    }
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    geo.setIndex(idx); geo.computeVertexNormals();
-    const m = new THREE.MeshLambertMaterial({ map: tex, alphaTest: 0.45, side: THREE.DoubleSide });
-    const uTime = this.grassTime || { value: 0 };
-    this.grassTime = uTime;
-    m.onBeforeCompile = (sh) => {
-      sh.uniforms.uTime = uTime;
-      sh.vertexShader = 'uniform float uTime;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
-        vec4 wp = instanceMatrix * vec4(0.0,0.0,0.0,1.0);
-        float sway = sin(uTime * 1.7 + wp.x * 0.35 + wp.z * 0.25) * 0.18 * position.y;
-        transformed.x += sway; transformed.z += sway * 0.5;`);
-    };
-    const tufts = [];
-    for (const b of M.bushes) {
-      const area = (b.x2 - b.x1) * (b.z2 - b.z1);
-      for (let i = 0; i < area * 2.2; i++) tufts.push([rand(b.x1 + 0.2, b.x2 - 0.2), rand(b.z1 + 0.2, b.z2 - 0.2), rand(1.5, 2.1)]);
-    }
-    // ilalang dekoratif di sela kontainer keliling (di luar area main)
-    for (const w of M.walk) {
-      const per = 2 * ((w.x2 - w.x1) + (w.z2 - w.z1));
-      for (let i = 0; i < per / 3; i++) {
-        const side = Math.floor(R() * 4), t = R();
-        const o = 0.3 + R() * 0.6;
-        const x = side < 2 ? w.x1 + (w.x2 - w.x1) * t : side === 2 ? w.x1 - o : w.x2 + o;
-        const z = side >= 2 ? w.z1 + (w.z2 - w.z1) * t : side === 0 ? w.z1 - o : w.z2 + o;
-        if (inAnyRect(x, z, M.walk, 0.1)) continue;
-        tufts.push([x, z, rand(0.9, 1.6)]);
-      }
-    }
-    const inst = new THREE.InstancedMesh(geo, m, tufts.length);
-    tufts.forEach(([x, z, h], i) => {
-      tmpQ.setFromAxisAngle(UP, R() * Math.PI);
-      tmpM.compose(tmpV.set(x, 0, z), tmpQ, tmpS.set(h * 0.8, h, h * 0.8));
-      inst.setMatrixAt(i, tmpM);
-      inst.setColorAt(i, tmpC.setRGB(0.85 + R() * 0.3, 0.85 + R() * 0.25, 0.7 + R() * 0.2));
-    });
-    this.world.add(inst);
-  }
+  buildWorld(M) { buildWorldReal(this, M); }
 
   // ------------------------------------------------------------------ particles
   initParticles() {
@@ -942,6 +796,7 @@ export class Renderer {
     const r = { id: o.i, k: o.k, s: o.s, tm: o.tm, obj, px: o.x, pz: o.z, f: o.f || 0, fromX: o.x, fromZ: o.z, toX: o.x, toZ: o.z, fromF: o.f || 0, toF: o.f || 0, t0: this.time, d: o, atkT: -9, castT: -9, phase: Math.random() * 6, speed: 0, alpha: 1 };
     if (o.k !== 'p') this.makeLabel(r);
     if (o.k === 'h') this.attachModel(r);
+    else if (o.k !== 'p') this.attachProp(r);
     if (o.k === 's') { r.armed = !!(o.fl & 8192); if (o.s === 'lightning' && r.armed) obj.userData.spear.position.y += 1.2; }
     return r;
   }
@@ -967,6 +822,43 @@ export class Renderer {
     if (r.k === 'h' && r.obj.userData.ring) r.obj.userData.ring.material.color.setHex(own ? 0xffd23a : TEAM_COL[r.tm]);
   }
 
+  async attachProp(r) {
+    const name = r.k === 's' ? { water: 'tower_water', lightning: 'tower_lightning', base: 'office' }[r.s] : r.k === 'b' ? (r.s === 'apexcat' ? 'dozer' : 'excavator') : r.s;
+    const FUR = { cat: ['#a8682f', '#8a8580', '#3a2e26', '#c9a26a', '#d8d2c8', '#6a4a30'], dog: ['#8b5a2b', '#b38b5d', '#3a2e26', '#c9a26a'], mastiff: ['#4a3628', '#5a4636'] };
+    const opts = r.k === 'm' ? { fur: FUR[r.s][r.id % FUR[r.s].length], shadowNodes: ['Body', 'Cart'] } : (r.k === 'b' && r.d.al ? { paint: r.tm === 0 ? '#3f7fd8' : '#d8483a' } : {});
+    const P = await makeProp(name, r.tm, opts);
+    if (!P || !this.ents.has(r.id) || r.prop) return;
+    const U = r.obj.userData;
+    for (const c of [...r.obj.children]) r.obj.remove(c);
+    U.dome = null;
+    r.obj.scale.setScalar(1);
+    r.obj.add(P.root);
+    r.prop = P;
+    const N = (n) => P.node(n) || new THREE.Object3D();
+    if (r.k === 's') {
+      const M = this.map;
+      const yaw = Math.atan2(M.w / 2 - r.px, M.h / 2 - r.pz);
+      P.root.rotation.y = r.s === 'base' ? Math.round(yaw / (Math.PI / 2)) * (Math.PI / 2) : yaw;
+      U.yaw0 = P.root.rotation.y;
+      if (r.s === 'water') { U.head = N('Head'); U.muzzleY = U.head.position.y; U.valve = N('Valve'); U.valveAxis = 'z'; }
+      else if (r.s === 'lightning') {
+        U.spear = N('Spear'); U.spearBase = U.spear.position.y - 1.2;
+        U.glow = mesh(GEO.sph, basicAdd(0x5aa0ff, 0), 0.8, 0.8, 0.8, 0, 1.3, 0); U.spear.add(U.glow);
+        const cop = P.mats.Copper || [];
+        U.copper = { set emissiveIntensity(v) { for (const m of cop) m.emissiveIntensity = v; } };
+      } else {
+        U.ant = N('Antenna'); U.flood = P.mats.Flood || [];
+        const sign = new THREE.Mesh(GEO.plane, new THREE.MeshBasicMaterial({ map: this.tex.sign[r.tm] }));
+        sign.scale.set(4.3, 1.08, 1); sign.position.z = 0.06; N('Sign').add(sign);
+      }
+    } else if (r.k === 'm') {
+      U.legs = ['LegFL', 'LegFR', 'LegBL', 'LegBR'].map(N); U.tail = N('Tail'); U.headN = N('Head');
+    } else {
+      U.legs = []; U.aura = null;
+      U.mach = { blade: N('Blade'), ripper: N('Ripper'), upper: N('Upper'), boom: N('Boom'), arm: N('Arm'), bucket: N('Bucket') };
+    }
+  }
+
   async attachModel(r) {
     const m = await makeHero(r.s);
     if (!m || !this.ents.has(r.id) || r.anim) return;
@@ -974,6 +866,8 @@ export class Renderer {
     U.body.visible = false;
     if (U.drone) U.drone.visible = false;
     m.root.scale.setScalar(1.5 / 1.35); // grup hero sudah diskalakan 1.35; model 1,81 m -> ~2,7 m agar terbaca di HP
+    m.root.updateMatrixWorld(true);
+    r.headY = Math.min(3.6, Math.max(2.3, new THREE.Box3().setFromObject(m.root).max.y * 1.35)) + 0.32;   // tinggi kepala per hero (untuk label)
     const sk = r.d.sk || 0;
     applySkin(m, r.s, HEROES[r.s], sk);
     r.skin = sk;
@@ -1012,12 +906,25 @@ export class Renderer {
     else if (fl & 3) state = 'stun';
     else if (now - r.castT < 0.55) { state = 'cast'; slot = r.castSlot || 0; if (A.lastCast !== r.castT) { A.lastCast = r.castT; restart = true; } speed = 1.5; }
     else if (now - r.atkT < 0.5) { state = 'attack'; if (A.lastAtk !== r.atkT) { A.lastAtk = r.atkT; A.alt = !A.alt; restart = true; } speed = 1.7; }
-    else if (r.speed > 0.6) { state = r.speed > 8.5 ? 'sprint' : 'run'; speed = Math.min(1.7, Math.max(0.75, r.speed / 5.4)); }
+    else if (r.speed > 0.6) { state = r.speed > 8.5 ? 'sprint' : 'run'; speed = Math.min(1.8, Math.max(0.75, r.speed / runSpeedRef(r.s))); }
     else if (fl & 2048) state = 'recall';
     else state = 'idle';
     const name = clipFor(r.s, state, slot, A.alt);
     this.playClip(r, name, { speed, restart, fade: state === 'death' ? 0.08 : 0.14 });
     A.mixer.update(dt);
+    // gerak jurus: loncat / putar / condong menerobos sesuai skill
+    const ct = now - r.castT, mv = ct < 0.6 ? skillMove(r.s, r.castSlot || 0) : null;
+    let hop = 0, spin = 0, lean = 0;
+    if (mv) {
+      const k = Math.min(1, ct / mv.t);
+      if (mv.hop) hop = Math.sin(k * Math.PI) * mv.hop;
+      if (mv.spin) spin = k < 1 ? k * Math.PI * 2 * mv.spin : 0;
+      if (mv.lean) lean = Math.sin(k * Math.PI) * mv.lean;
+      if (mv.hop && k >= 1 && !A.landed) { A.landed = true; this.burst(r.px, 0.2, r.pz, 14, ['#9a8a70', '#c8b8a0'], { speed: 5, up: 3, life: 0.6, size: 0.18, noGlow: true }); }
+      if (k < 1) A.landed = false;
+    }
+    A.root.rotation.y = spin; A.root.rotation.x = lean;
+    A.hop = hop;
     // efek skin: kilau emas (Epic), inti energi & aura (Legend), jejak neon saat lari (Elite)
     if (r.skin && !dead) {
       const U = r.obj.userData;
@@ -1026,7 +933,7 @@ export class Renderer {
       if (Math.random() < dt * rate) this.glow.emit(r.px + rand(-0.5, 0.5), r.skin === 1 ? 0.3 : rand(0.4, 2.6), r.pz + rand(-0.5, 0.5), 0, r.skin === 1 ? 0.2 : 1.2, 0, 0.7, r.skin === 3 ? 0.7 : 0.5, r.skinCol, -0.4);
     }
     // knock-up: angkat seluruh model
-    A.root.position.y = (fl & 2) ? 0.7 + Math.sin(now * 8) * 0.12 : 0;
+    A.root.position.y = (fl & 2) ? 0.7 + Math.sin(now * 8) * 0.12 : (A.hop || 0);
     // kilatan merah saat kena damage besar
     const ft = now - (r.flashT ?? -9);
     const flash = ft < 0.12 ? 1 - ft / 0.12 : 0;
@@ -1421,8 +1328,8 @@ export class Renderer {
     const me = this.ents.get(this.myId);
     if (me) this.camTarget.lerp(tmpV.set(me.px, 0, me.pz), Math.min(1, dt * 8));
     else if (this.spectate) this.camTarget.lerp(tmpV.set(this.spectate.x, 0, this.spectate.z), Math.min(1, dt * 2));
-    const dist = (this.portrait ? 34 : this.H < 500 ? 20 : 25) * this.zoom; // layar HP landscape: kamera lebih dekat
-    const back = dist * 0.82, up = dist * 0.9; // sudut ~48°: karakter terlihat dari samping-atas seperti MOBA mobile
+    const dist = (this.portrait ? 38 : this.H < 500 ? 22 : 26) * this.zoom; // layar HP landscape: kamera lebih dekat
+    const back = dist * 0.66, up = dist * 0.94; // sudut ~55° dengan lensa 36°: nyaman, distorsi kecil
     const yaw = this.camYaw;
     let sx = 0, sz = 0;
     if (this.shake > 0) { this.shake -= dt; sx = rand(-0.25, 0.25) * this.shake * 2; sz = rand(-0.25, 0.25) * this.shake * 2; }
@@ -1432,6 +1339,19 @@ export class Renderer {
     const ax = av[0] * 2.5 * sgn, az = av[1] * 2.5 * sgn;
     this.camera.position.set(this.camTarget.x + ax + sx, up, this.camTarget.z + az + sgn * back + sz);
     this.camera.lookAt(this.camTarget.x + ax, 0, this.camTarget.z + az - sgn * 2);
+    this.fpsAcc = (this.fpsAcc || 0) + dt; this.fpsN = (this.fpsN || 0) + 1;
+    if (this.fpsAcc > 3) {
+      const fps = this.fpsN / this.fpsAcc;
+      this.fpsAcc = 0; this.fpsN = 0;
+      // dua jendela berturut-turut di bawah 33 FPS (setelah pemuatan awal) -> turunkan kualitas
+      if (fps < 33 && this.time > 8 && !document.hidden) this.lowN = (this.lowN || 0) + 1; else this.lowN = 0;
+      if (this.lowN >= 2 && this.quality !== 'low') { this.lowN = 0; this.setQuality(this.quality === 'high' ? 'med' : 'low', false); if (this.onQuality) this.onQuality(this.quality, fps); }
+    }
+    if (this.sun.castShadow) {
+      const t = this.camTarget;
+      this.sun.target.position.set(t.x, 0, t.z); this.sun.position.set(t.x - 46, 34, t.z + 20);
+      this.sun.target.updateMatrixWorld();
+    }
     if (this.composer) this.composer.render(); else this.gl.render(this.scene, this.camera);
     this.updateLabels();
     void input;
@@ -1478,18 +1398,27 @@ export class Renderer {
       r.phase += dt * (moving ? 14 : 0);
       U.legs.forEach((l, i) => { l.rotation.x = moving ? Math.sin(r.phase + (i % 2 ? Math.PI : 0) + (i > 1 ? Math.PI / 2 : 0)) * 0.6 : 0; });
       const at = now - r.atkT;
-      r.obj.position.y = at < 0.2 ? Math.sin(at / 0.2 * Math.PI) * 0.25 : 0;
+      r.obj.position.y = !U.mach && at < 0.2 ? Math.sin(at / 0.2 * Math.PI) * 0.25 : 0;
+      if (U.tail) U.tail.rotation.y = Math.sin(now * 7 + r.id) * 0.35;
+      if (U.headN) U.headN.rotation.x = at < 0.25 ? Math.sin(at / 0.25 * Math.PI) * 0.5 : Math.sin(now * 2 + r.id) * 0.06;
+      if (U.mach) {
+        const Mh = U.mach, k = at < 0.6 ? Math.sin(at / 0.6 * Math.PI) : 0, idle = Math.sin(now * 1.3 + r.id) * 0.03;
+        if (r.s === 'apexcat') { Mh.blade.rotation.x = -0.05 - k * 0.3 + idle; Mh.ripper.rotation.x = k * 0.35; }
+        else { Mh.boom.rotation.x = idle + k * 0.3; Mh.arm.rotation.x = idle * 2 + k * 0.55; Mh.bucket.rotation.x = k * 0.9; Mh.upper.rotation.y = Math.sin(now * 0.5 + r.id) * 0.1; }
+        r.prop.root.position.y = Math.sin(now * 41) * 0.012;          // getaran mesin diesel
+        if (Math.random() < dt * 9) this.burst(r.px + rand(-0.4, 0.4), r.s === 'apexcat' ? 3.3 : 3.8, r.pz + rand(-0.4, 0.4), 1, ['#2e2e2e', '#4a4a4a'], { speed: 0.4, up: 2.4, life: 1.5, size: 0.32, grav: -0.5, noGlow: true });
+      }
       if (U.aura) { U.aura.rotation.z = now; U.aura.material.opacity = 0.25 + Math.sin(now * 3) * 0.1; }
       if (fl & 1) r.obj.rotation.z = Math.sin(now * 20) * 0.08; else r.obj.rotation.z = 0;
     } else if (r.k === 's') {
       const ft = now - (r.fireT ?? -9);
       if (r.s === 'water') {
-        if (r.aimF !== undefined) U.head.rotation.y = lerpAngle(U.head.rotation.y, r.aimF, Math.min(1, dt * 8));
+        if (r.aimF !== undefined) U.head.rotation.y = lerpAngle(U.head.rotation.y, r.aimF - (U.yaw0 || 0), Math.min(1, dt * 8));
         U.head.position.y = U.muzzleY - (ft < 0.15 ? 0.15 * (1 - ft / 0.15) : 0);
-        U.valve.rotation.x = now * (r.armT ? 1 : 0.2);
+        U.valve.rotation[U.valveAxis || 'x'] = now * (r.armT ? 1 : 0.2);
         if (r.d.hp < r.d.mh * 0.4 && Math.random() < dt * 8) this.burst(r.px + rand(-1, 1), 8.5, r.pz + rand(-1, 1), 1, '#9fdcff', { speed: 0.5, up: 0, life: 1, size: 0.1 });
       } else if (r.s === 'lightning') {
-        const target = r.armed ? 10.1 : 8.9;
+        const target = (U.spearBase ?? 8.9) + (r.armed ? 1.2 : 0);
         U.spear.position.y += (target - U.spear.position.y) * Math.min(1, dt * 3);
         U.glow.material.opacity = r.armed ? 0.25 + Math.sin(now * 9) * 0.12 + (ft < 0.2 ? 0.5 : 0) : 0;
         U.copper.emissiveIntensity = r.armed ? 0.6 + Math.sin(now * 9) * 0.3 : 0;
@@ -1501,7 +1430,7 @@ export class Renderer {
         if (r.d.hp < r.d.mh * 0.4 && Math.random() < dt * 5) this.burst(r.px + rand(-3, 3), 7, r.pz + rand(-2, 2), 1, ['#555555', '#333333'], { speed: 0.5, up: 3, life: 2, size: 0.4, grav: -1 });
       }
       // struktur kebal = efek kubah tipis
-      if (fl & 1024) { if (!U.dome) { U.dome = mesh(GEO.hemi, basicAdd(0x9fd8ff, 0.08), r.s === 'base' ? 6 : 2.6, r.s === 'base' ? 9 : 13, r.s === 'base' ? 6 : 2.6); r.obj.add(U.dome); } }
+      if (fl & 1024) { if (!U.dome) { U.dome = mesh(GEO.ring, basic(0x9fd8ff, 0.5), r.s === 'base' ? 6.2 : 3.2, r.s === 'base' ? 6.2 : 3.2, 1, 0, 0.12, 0); U.dome.rotation.x = -Math.PI / 2; r.obj.add(U.dome); } }
       else if (U.dome) { r.obj.remove(U.dome); U.dome.material.dispose(); U.dome = null; }
     }
   }
@@ -1516,11 +1445,11 @@ export class Renderer {
       if (!r.lbl) continue;
       if (r.hidden) continue;
       const o = r.d;
-      const h = r.k === 'h' ? 3.45 : r.k === 'm' ? (r.s === 'mastiff' ? 2.3 : 1.6) : r.k === 'b' ? (r.s === 'cerberus' ? 5.6 : 5) : r.s === 'water' ? 12 : r.s === 'lightning' ? 13.5 : 10.5;
+      const h = r.k === 'h' ? (r.headY || 3.5) : r.k === 'm' ? (r.s === 'mastiff' ? 2.5 : r.s === 'dog' ? 2.0 : 1.5) : r.k === 'b' ? (r.s === 'cerberus' ? 6.3 : 4.3) : r.s === 'water' ? 11.4 : r.s === 'lightning' ? 14.6 : 11.8;
       const p = this.project(r.px, h, r.pz);
       if (!p.vis || p.x < -80 || p.x > this.W + 80 || p.y < -40 || p.y > this.H + 40) { r.lbl.style.visibility = 'hidden'; continue; }
       r.lbl.style.visibility = '';
-      r.lbl.style.transform = `translate3d(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px,0)`;
+      r.lbl.style.transform = `translate3d(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px,0) translateY(-100%)`;
       const tot = Math.max(o.mh, o.hp + (o.sh || 0));
       const hpW = (Math.max(0, o.hp) / tot * 100).toFixed(1) + '%';
       if (r.lblHpW !== hpW) { r.lblHp.style.width = hpW; r.lblHpW = hpW; }

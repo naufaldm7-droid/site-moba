@@ -164,8 +164,8 @@ export const MINION = {
 };
 
 export const BOSS = {
-  apexcat: { name: 'The Apex Alley Cat', hp: 5200, dmg: 120, range: 2.6, interval: 1.2, ms: 6, r: 1.6, armor: 35, mres: 30, gold: 140, xp: 200, spawnAt: 75, respawn: 90 },
-  cerberus: { name: 'Cerberus of the Yard', hp: 11000, dmg: 190, range: 3.2, interval: 1.4, ms: 5.5, r: 2.2, armor: 55, mres: 45, gold: 220, xp: 320, spawnAt: 240, respawn: 120 },
+  apexcat: { name: 'Rust Dozer D9', hp: 5200, dmg: 120, range: 2.6, interval: 1.2, ms: 6, r: 1.6, armor: 35, mres: 30, gold: 140, xp: 200, spawnAt: 75, respawn: 90 },
+  cerberus: { name: 'Iron Claw Excavator', hp: 11000, dmg: 190, range: 3.2, interval: 1.4, ms: 5.5, r: 2.2, armor: 55, mres: 45, gold: 220, xp: 320, spawnAt: 240, respawn: 120 },
 };
 
 export const WAVE = { siegeEvery: 3 };

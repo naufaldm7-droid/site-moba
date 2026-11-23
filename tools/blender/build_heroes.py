@@ -83,6 +83,18 @@ def mk_mat(name, col, rough=0.75, metal=0.0, emis=None, strength=2.0, double=Tru
     return m
 
 
+def stripe_image(name, base, line, size=128):
+    img = bpy.data.images.new(name, size, size)
+    srgb = lambda h: tuple(int(h.lstrip('#')[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    B, C = srgb(base), srgb(line)
+    px = []
+    for y in range(size):
+        for x in range(size):
+            px += [*(C if x % 16 == 0 else B), 1.0]
+    img.pixels = px; img.pack()
+    return img
+
+
 def plaid_image(name, base, a, b, size=128):
     img = bpy.data.images.new(name, size, size)
     srgb = lambda h: tuple(int(h.lstrip('#')[i:i + 2], 16) / 255 for i in (0, 2, 4))
@@ -129,6 +141,42 @@ def landmarks(arm, body):
     return lm
 
 
+ARM_BONES = ('upperarm', 'lowerarm', 'hand', 'index', 'middle', 'pinky', 'ring', 'thumb')
+
+
+def shape_body(body, arm, build):
+    """Variasi tubuh: bulk (kekar/kurus), belly (perut gendut), legs, chest. Dilakukan di rest pose sebelum pakaian dibuat."""
+    bulk = build.get('bulk', 0.0); belly = build.get('belly', 0.0)
+    legs = build.get('legs', bulk * 0.6); chest = build.get('chest', bulk)
+    if not (bulk or belly or legs or chest): return
+    A = arm.matrix_world; B = arm.data.bones
+    hp = lambda n: A @ B[n].head_local
+    gname = {g.index: g.name for g in body.vertex_groups}
+    sy = hp('spine_02').y; waist_z = hp('spine_01').z; ny = hp('neck_01').y
+    heads = {b.name: hp(b.name) for b in B}
+    for v in body.data.vertices:
+        co = v.co.copy(); d = Vector((0, 0, 0))
+        for g in v.groups:
+            n = gname.get(g.group); w = g.weight
+            if not n or w < 0.01: continue
+            if n in ('pelvis', 'spine_01', 'spine_02', 'spine_03'):
+                f = chest if n == 'spine_03' else bulk * 0.8
+                bz = math.exp(-((co.z - (waist_z + 0.03)) / 0.17) ** 2)
+                front = 1.0 if co.y < sy else 0.3
+                d += w * Vector((co.x * (f + belly * 0.5 * bz), (co.y - sy) * (f + belly * 1.6 * bz * front), 0))
+            elif n.startswith(('upperarm', 'lowerarm')):
+                hb = heads[n]; d += w * Vector((0, (co.y - hb.y) * bulk * 1.1, (co.z - hb.z) * bulk * 1.1))
+            elif n.startswith('clavicle'):
+                d += w * Vector((co.x * chest * 0.45, (co.y - sy) * chest * 0.6, 0))
+            elif n.startswith(('thigh', 'calf')):
+                hb = heads[n]; f = legs + belly * (0.35 if n.startswith('thigh') else 0.12)
+                d += w * Vector(((co.x - hb.x) * f, (co.y - hb.y) * f, 0))
+            elif n == 'neck_01':
+                f = bulk * 0.5 + belly * 0.35
+                d += w * Vector((co.x * f, (co.y - ny) * f, 0))
+        v.co = co + d
+
+
 def vinfo(body, lm):
     gname = {g.index: g.name for g in body.vertex_groups}
     out = []
@@ -138,7 +186,8 @@ def vinfo(body, lm):
             n = gname.get(g.group)
             if n: w[n] = g.weight
         co = body.matrix_world @ v.co
-        is_arm = abs(co.x) > lm.sh_x + 0.02 and co.z > lm.armpit
+        aw = sum(x for n, x in w.items() if n.startswith(ARM_BONES))
+        is_arm = aw > 0.5
         out.append((co, w, is_arm))
     return out
 
@@ -258,7 +307,11 @@ def make_hat(spec, lm, M):
     vs = [v for v in bm.verts]
     bmesh.ops.transform(bm, matrix=Matrix.Translation((c.x, c.y + 0.005, lm.head_top - r * 0.86)) @ Matrix.Diagonal((r * 1.08, r * 1.2, r * 0.98, 1)), verts=vs)
     base_z = lm.head_top - r * 0.86
-    if kind == 'hardhat':
+    if kind == 'cap':
+        bill = add_cyl(bm, r * 0.95, r * 0.95, 0.012, loc=(c.x, c.y - r * 0.95, base_z + 0.012), mat=0, seg=20)
+        for v in bill: v.co.y = min(v.co.y, c.y - r * 0.2)
+        add_cyl(bm, 0.012, 0.012, 0.012, loc=(c.x, c.y, lm.head_top + r * 0.1), mat=1)
+    elif kind == 'hardhat':
         brim = add_cyl(bm, r * 1.32, r * 1.32, 0.012, loc=(c.x, c.y - 0.012, base_z), mat=0, seg=28)
         for v in brim:
             if v.co.y < c.y: v.co.y -= 0.035 * min(1, (c.y - v.co.y) / r)  # pelindung depan lebih panjang
@@ -293,28 +346,86 @@ def make_glasses(lm, M, eyes_obj, visor=None):
     return new_obj('Glasses', bm, [M['ToolMetal'], M['ToolGlow']])
 
 
-def make_chest(spec, lm, M):
-    """dasi, lanyard + ID card, saku rompi (parent ke spine_03)."""
+def front_y(VI, z, xw=0.07, dz=0.035, x0=0.0):
+    ys = [co.y for co, w, a in VI if abs(co.x - x0) < xw and abs(co.z - z) < dz and not a]
+    return min(ys) if ys else -0.13
+
+
+def slab(bm, VI, x, z_top, z_bot, size_x, thick, mat, out=0.045):
+    """kotak tipis yang menempel mengikuti kemiringan permukaan depan badan."""
+    yt, yb = front_y(VI, z_top, x0=x) - out, front_y(VI, z_bot, x0=x) - out
+    L_ = math.hypot(z_top - z_bot, yt - yb)
+    ang = math.atan2(yt - yb, z_top - z_bot)
+    add_box(bm, (size_x, thick, L_), loc=(x, (yt + yb) / 2, (z_top + z_bot) / 2), mat=mat, rot=Matrix.Rotation(-ang, 3, 'X').to_euler())
+
+
+def make_chest(spec, lm, M, VI):
+    """dasi, lanyard + ID card, saku rompi, radio (parent ke spine_03)."""
     bm = bmesh.new()
-    front = -0.135  # kira-kira permukaan dada depan (y negatif = depan)
     any_ = False
     if spec.get('tie'):
-        add_box(bm, (0.05, 0.012, 0.26), loc=(0, front - 0.012, lm.neck - 0.19), mat=0,
-                rot=Matrix.Rotation(math.radians(6), 3, 'X').to_euler()); any_ = True
-        add_box(bm, (0.035, 0.014, 0.03), loc=(0, front - 0.012, lm.neck - 0.045), mat=0)
+        slab(bm, VI, 0, lm.neck - 0.05, lm.neck - 0.33, 0.05, 0.012, 0); any_ = True
+        slab(bm, VI, 0, lm.neck - 0.03, lm.neck - 0.065, 0.04, 0.016, 0)
     if spec.get('lanyard'):
-        for sx in (-1, 1):
-            add_box(bm, (0.012, 0.006, 0.2), loc=(sx * 0.045, front - 0.02, lm.neck - 0.11), mat=1,
-                    rot=Matrix.Rotation(math.radians(sx * 12), 3, 'Y').to_euler())
-        add_box(bm, (0.06, 0.006, 0.085), loc=(0.0, front - 0.026, lm.neck - 0.25), mat=2); any_ = True
+        for sx in (-1, 1): slab(bm, VI, sx * 0.04, lm.neck - 0.02, lm.neck - 0.21, 0.012, 0.006, 1, out=0.05)
+        slab(bm, VI, 0, lm.neck - 0.21, lm.neck - 0.3, 0.06, 0.006, 2, out=0.055); any_ = True
     if spec.get('pockets'):
-        for sx in (-1, 1):
-            add_box(bm, (0.075, 0.025, 0.075), loc=(sx * 0.085, front - 0.03, lm.neck - 0.27), mat=3)
-        add_box(bm, (0.045, 0.03, 0.1), loc=(-0.14, front - 0.01, lm.neck - 0.12), mat=4)  # walkie-talkie di bahu
+        for sx in (-1, 1): slab(bm, VI, sx * 0.09, lm.neck - 0.23, lm.neck - 0.31, 0.075, 0.028, 3, out=0.06)
+        slab(bm, VI, -0.13, lm.neck - 0.07, lm.neck - 0.17, 0.045, 0.03, 4, out=0.06)
         any_ = True
     if not any_:
         bm.free(); return None
     return new_obj('ChestGear', bm, [M['Tie'], M['Straps'], M['Accent'], M['Vest'], M['ToolMetal']])
+
+
+def make_gear(spec, lm, M, VI, arm):
+    """aksesori tambahan agar tiap hero berbeda: kantong pinggang, ransel, earmuff, masker, pelindung bahu, saku cargo."""
+    gear = spec.get('gear', ())
+    out = []
+    A = arm.matrix_world; B = arm.data.bones
+    hp = lambda n: A @ B[n].head_local
+    mats = [M['Belt'], M['ToolMetal'], M['Accent'], M['Vest'], M['Straps'], M['ToolGlow']]
+    if 'pouches' in gear:
+        bm = bmesh.new()
+        hipx = max([abs(co.x) for co, w, a in VI if abs(co.z - (lm.waist - 0.03)) < 0.03 and not a] or [0.17])
+        for sx in (-1, 1):
+            add_box(bm, (0.07, 0.12, 0.13), loc=(sx * (hipx + 0.05), 0.0, lm.waist - 0.07), mat=0)
+            add_box(bm, (0.075, 0.125, 0.03), loc=(sx * (hipx + 0.05), 0.0, lm.waist - 0.015), mat=4)
+        add_cyl(bm, 0.012, 0.012, 0.22, loc=(hipx + 0.1, 0.03, lm.waist - 0.1), mat=1)   # palu/obeng tergantung
+        add_box(bm, (0.03, 0.05, 0.05), loc=(hipx + 0.1, 0.03, lm.waist + 0.02), mat=1)
+        out.append((new_obj('Pouches', bm, mats), 'pelvis'))
+    if 'backpack' in gear:
+        bm = bmesh.new()
+        by = max([co.y for co, w, a in VI if abs(co.x) < 0.08 and abs(co.z - (lm.neck - 0.2)) < 0.05 and not a] or [0.12])
+        add_box(bm, (0.26, 0.13, 0.36), loc=(0, by + 0.1, lm.neck - 0.24), mat=3)
+        add_box(bm, (0.2, 0.05, 0.14), loc=(0, by + 0.185, lm.neck - 0.3), mat=0)
+        add_cyl(bm, 0.035, 0.035, 0.3, loc=(0.16, by + 0.1, lm.neck - 0.22), mat=1)   # botol / tabung
+        out.append((new_obj('Backpack', bm, mats), 'spine_03'))
+    if 'earmuffs' in gear or 'mask' in gear:
+        bm = bmesh.new()
+        c = lm.head_c; r = lm.head_r
+        if 'earmuffs' in gear:
+            for sx in (-1, 1): add_cyl(bm, 0.045, 0.045, 0.04, loc=(c.x + sx * (r * 0.95), c.y + 0.01, c.z - 0.01), axis='X', mat=2)
+        if 'mask' in gear:
+            add_box(bm, (0.1, 0.05, 0.075), loc=(c.x, lm.face_y - 0.01, c.z - 0.085), mat=0)
+            for sx in (-1, 1): add_cyl(bm, 0.028, 0.028, 0.035, loc=(c.x + sx * 0.06, lm.face_y, c.z - 0.095), axis='X', mat=1)
+        out.append((new_obj('HeadGear', bm, mats), 'Head'))
+    if 'pauldrons' in gear:
+        for side, sx in (('l', 1), ('r', -1)):
+            bm = bmesh.new()
+            h = hp('upperarm_' + side)
+            vs = add_sphere(bm, 0.105, loc=(h.x + sx * 0.03, h.y, h.z + 0.035), scale=(1.25, 1.05, 0.7), mat=1, seg=12)
+            add_box(bm, (0.2, 0.19, 0.015), loc=(h.x + sx * 0.03, h.y, h.z + 0.02), mat=2)
+            out.append((new_obj('Pauldron_' + side, bm, mats), 'clavicle_' + side))
+    if 'cargo' in gear:
+        for side in ('l', 'r'):
+            bm = bmesh.new()
+            t = hp('thigh_' + side); sx = 1 if side == 'l' else -1
+            tx = max([abs(co.x) for co, w, a in VI if abs(co.z - (t.z - 0.22)) < 0.03 and co.x * sx > 0] or [0.2])
+            add_box(bm, (0.035, 0.11, 0.14), loc=(sx * (tx + 0.025), t.y, t.z - 0.22), mat=3)
+            add_box(bm, (0.04, 0.115, 0.03), loc=(sx * (tx + 0.025), t.y, t.z - 0.16), mat=0)
+            out.append((new_obj('Cargo_' + side, bm, [M['Belt'], M['ToolMetal'], M['Accent'], M['Pants'], M['Straps'], M['ToolGlow']]), 'thigh_' + side))
+    for o, bone in out: bone_parent(o, arm, bone)
 
 
 # ------------------------------------------------------------------ alat di tangan (grip di origin, batang ke depan -Y)
@@ -441,12 +552,13 @@ def materials(spec, hero):
     M['Boots'] = mk_mat('Boots', spec['boots'], 0.55)
     M['Belt'] = mk_mat('Belt', spec.get('belt', '#222222'), 0.5, 0.1)
     M['Vest'] = mk_mat('Vest', spec.get('vest', '#444444'), 0.8)
-    M['Jacket'] = mk_mat('Jacket', spec.get('jacket', '#333333'), 0.7)
+    M['Jacket'] = mk_mat('Jacket', spec.get('jacket', '#333333'), 0.7, img=stripe_image('Stripe_' + hero, spec.get('jacket', '#333333'), spec['pinstripe']) if spec.get('pinstripe') else None, uv_scale=10 if spec.get('pinstripe') else None)
     M['Gloves'] = mk_mat('Gloves', spec.get('gloves', '#333333'), 0.6)
     M['Hat'] = mk_mat('Hat', spec.get('hat_col', '#eeeeee'), 0.3, 0.05)
     M['Accent'] = mk_mat('Accent', spec.get('hat_stripe', acc), 0.25, 0.6, emis='#b0b0b0' if spec.get('reflect') else None, strength=0.6)
     M['Straps'] = mk_mat('Straps', spec.get('straps', spec.get('lanyard', '#222222')), 0.6)
     M['Tie'] = mk_mat('Tie', spec.get('tie', '#222222'), 0.6)
+    M['Scarf'] = mk_mat('Scarf', spec.get('scarf_col', '#8a1d1d'), 0.85)
     M['Tool'] = mk_mat('Tool', '#2b2f36', 0.5, 0.2)
     M['Paper'] = mk_mat('Paper', '#f2efe6', 0.9)
     M['Hair'] = mk_mat('Hair', spec.get('hair_col', '#1c1410'), 0.6)
@@ -475,8 +587,10 @@ def build_hero(hero, preview=False, export=True):
             mn = o.data.materials[0].name
             if 'Eye' in mn: o.data.materials[0].name = 'Eyes'; eyes = o
             elif 'Hair' in mn: o.data.materials[0].name = 'Brows'
+    shape_body(body, arm, spec.get('build', {}))
     lm = landmarks(arm, body)
     VI = vinfo(body, lm)
+    gear = spec.get('gear', ())
     M = materials(spec, hero)
     sl = spec.get('sleeve', 'long')
     sleeve_x = {'none': lm.sh_x + 0.02, 'short': (lm.sh_x + lm.elbow_x) / 2, 'rolled': lm.elbow_x + 0.06, 'long': lm.wrist_x - 0.015}[sl]
@@ -501,15 +615,26 @@ def build_hero(hero, preview=False, export=True):
         bone_parent(sh, arm, 'foot_' + side)
     if gloved: layer(body, 'Gloves', VI, gloves, 0.007, [M['Gloves']], smooth=0)
     if jacket_on:
-        jz = lm.waist - 0.09
+        jz = (lm.knee + 0.16) if 'longcoat' in gear else lm.waist - 0.09
         opening = lambda co: co.y < -0.02 and abs(co.x) < 0.035 + max(0, (co.z - lm.waist)) * 0.18 and co.z > lm.waist - 0.02
         layer(body, 'Jacket', VI, lambda co, w, a: ((jz <= co.z <= lm.neck + 0.05 and neckw(w) < 0.6 and not a) or (a and abs(co.x) < lm.wrist_x - 0.03)) and not opening(co),
               0.03, [M['Jacket']], smooth=5)
     if spec.get('vest'):
         refl = spec.get('reflect')
         fm = (lambda c: 1 if refl and (abs(c.z - (lm.waist + 0.12)) < 0.032 or abs(c.z - (lm.waist + 0.28)) < 0.032) else 0)
-        layer(body, 'Vest', VI, lambda co, w, a: lm.waist + 0.02 <= co.z <= lm.neck - 0.045 and abs(co.x) < lm.sh_x - 0.005 and not a, 0.036,
+        layer(body, 'Vest', VI, lambda co, w, a: lm.waist + 0.02 <= co.z <= lm.neck - 0.045 and (w.get('clavicle_l', 0) + w.get('clavicle_r', 0)) < 0.5 and not a, 0.036,
               [M['Vest'], M['Accent']], face_mat=fm)
+    sy = (arm.matrix_world @ arm.data.bones['spine_02'].head_local).y
+    if 'apron' in gear:
+        layer(body, 'Apron', VI, lambda co, w, a: lm.knee + 0.08 <= co.z <= lm.neck - 0.14 and co.y < sy + 0.01 and not a, 0.045, [M['Gloves']], smooth=6)
+    if 'bands' in gear:
+        layer(body, 'Bands', VI, lambda co, w, a: (a and lm.wrist_x - 0.15 < abs(co.x) < lm.wrist_x - 0.1) or (not a and 0.36 < co.z < 0.41), 0.034, [M['Accent']], smooth=2)
+    if 'kneepads' in gear:
+        layer(body, 'Kneepads', VI, lambda co, w, a: not a and abs(co.z - lm.knee) < 0.075 and co.y < (arm.matrix_world @ arm.data.bones['calf_l'].head_local).y + 0.01, 0.042, [M['Tool']], smooth=3)
+    if 'scarf' in gear:
+        layer(body, 'Scarf', VI, lambda co, w, a: lm.neck - 0.045 <= co.z <= lm.neck + 0.075 and abs(co.x) < 0.16 and not a, 0.034, [M['Scarf']], smooth=5)
+    if 'legstraps' in gear:
+        layer(body, 'LegStraps', VI, lambda co, w, a: not a and (0.75 < co.z < 0.79), 0.032, [M['Straps']], smooth=2)
     if spec.get('straps'):
         layer(body, 'Straps', VI, lambda co, w, a: lm.waist <= co.z <= lm.neck and not a and abs(abs(co.x) - 0.085) < 0.022, 0.03, [M['Straps']])
     if spec.get('hat') == 'hijab':
@@ -546,7 +671,8 @@ def build_hero(hero, preview=False, export=True):
     if spec.get('glasses') or spec.get('visor'):
         g = make_glasses(lm, M, eyes, visor=spec.get('visor'))
         bone_parent(g, arm, 'Head')
-    ch = make_chest(spec, lm, M)
+    make_gear(spec, lm, M, VI, arm)
+    ch = make_chest(spec, lm, M, VI)
     if ch: bone_parent(ch, arm, 'spine_03')
     for side, key in (('r', 'tool'), ('l', 'tool_l')):
         if spec.get(key):
@@ -563,6 +689,19 @@ def build_hero(hero, preview=False, export=True):
         if img.size[0] > 1024 and ('Superhero' in img.name or 'Hair' in img.name):
             s = 1024 if 'BaseColor' in img.name or 'Dark' in img.name or 'Ligh' in img.name else 512
             img.scale(s, s)
+    # warna kulit per hero (dikalikan ke tekstur)
+    ref = (0.86, 0.70, 0.56); sk = spec.get('skin', ref)
+    mul = [min(1.25, sk[i] / ref[i]) for i in range(3)]
+    for img in bpy.data.images:
+        if 'Superhero' in img.name and ('Dark' in img.name or 'BaseColor' in img.name or 'Ligh' in img.name) and img.size[0] > 0:
+            import numpy as np
+            px = np.empty(img.size[0] * img.size[1] * 4, dtype=np.float32); img.pixels.foreach_get(px)
+            px = px.reshape(-1, 4); px[:, 0] *= mul[0] * 1.06; px[:, 1] *= mul[1] * 1.03; px[:, 2] *= mul[2]
+            img.pixels.foreach_set(np.clip(px, 0, 1).ravel()); img.update()
+    # tinggi badan
+    hgt = spec.get('build', {}).get('height', 1.0)
+    arm.scale = (hgt, hgt, hgt)
+    bpy.context.view_layer.update()
     tris = sum(sum(len(p.vertices) - 2 for p in o.data.polygons) for o in bpy.data.objects if o.type == 'MESH')
     info = {'hero': hero, 'tris': tris}
     if preview:

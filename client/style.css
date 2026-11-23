@@ -257,3 +257,9 @@ table.sbt tr.me { background: rgba(242,194,48,.08); }
 .skin-btn { padding: 7px 6px; border-radius: 8px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.35); font: 700 11px var(--head); text-align: left; }
 .skin-btn.t1 { border-color: #c05aff88; } .skin-btn.t2 { border-color: #d4af37; color: #ffe08a; } .skin-btn.t3 { border-color: #3fe0ff; color: #9ff0ff; }
 .skin-btn.on { background: linear-gradient(180deg, rgba(255,211,77,.3), rgba(0,0,0,.3)); box-shadow: 0 0 0 2px var(--hz); }
+
+/* label hero ringkas, berjangkar di atas kepala */
+.lbl-h .bar { width: 62px; height: 6px; margin-left: -31px; border-radius: 3px; }
+.lbl-h .nm { font-size: 10px; margin-bottom: 1px; opacity: .92; }
+.lbl-h .lv { font-size: 9px; min-width: 13px; padding: 0 2px; }
+.lbl-m .bar { width: 28px; height: 3px; margin-left: -14px; }

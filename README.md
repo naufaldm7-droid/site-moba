@@ -87,6 +87,18 @@ Balance di-tuning lewat `shared/data.js`; cek hasilnya dengan `node tools/simtes
 - Membangun ulang model: buka Blender (add-on MCP aktif) lalu jalankan `tools/blender/build_heroes.py` → `build_all()` dan `build_anims()`. Spesifikasi tampilan tiap hero ada di `tools/blender/hero_specs.py`.
 - Uji balance: `node tools/herostats.js 40` (persentase menang per hero dari match bot).
 
+## Dunia realistis (v0.4)
+
+- **Laydown kumuh & nyata**: beton retak, kerikil, tanah, marka pudar, noda oli, jejak ban dan tulisan area di-*bake* jadi satu tekstur tanah; genangan memantulkan langit senja (HDRI); bayangan matahari sore.
+- **Kontainer berkarat** ditumpuk tidak rapi (miring, bergeser, ada yang tumbang) + puing: drum, ban bekas, peti, palet, kantong sampah, barrier beton, baja H, pipa, gulungan kabel, genset.
+- **Rumput & gulma foto-scan** (12 jenis): ilalang di semak sembunyi, gulma di retakan beton dan kaki kontainer, bergoyang kena angin.
+- **Turret & base** model baru: menara toren air rangka baja berkarat, menara penangkal petir + trafo, office kontainer 3 lantai.
+- **Turtle = Rust Dozer D9, Lord = Iron Claw Excavator** (alat berat tua berkarat, mesin bergetar, asap knalpot, bilah/boom bergerak saat menyerang). Minion kucing & anjing model baru berkaki, ekor dan kepala bergerak.
+- **Hero**: 20 bentuk tubuh berbeda (gendut, tinggi, kekar, kecil), perlengkapan beragam, bahan kain/denim/kulit/plastik/logam (normal map), gerakan jurus per hero (tebas, tusuk, loncat-hantam, terobos, guling, putar).
+- **Kamera** sudut ±55° lensa 36°; **nama & bar darah** berjangkar di atas kepala sesuai tinggi tiap hero.
+- **Kualitas adaptif**: tinggi (bloom + bayangan 2048), sedang (bayangan 1024), rendah (tanpa bayangan). Turun otomatis bila FPS < 33.
+- Aset CC0: tekstur/model/HDRI dari [Poly Haven](https://polyhaven.com) (`python tools/fetch_polyhaven.py`), model dibuat lewat `tools/blender/build_props.py`.
+
 ## Rencana berikutnya
 
 Fog of war untuk 5v5, camp jungle (Genset/Comp buff), draft pick & ban, model 3D minion & boss (kucing/anjing) dari Blender,
