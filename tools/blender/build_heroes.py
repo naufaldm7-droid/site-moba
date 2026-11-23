@@ -193,27 +193,48 @@ def vinfo(body, lm):
 
 
 # ------------------------------------------------------------------ lapisan pakaian (skinned)
-def layer(body, name, VI, pred, offset, mats, face_mat=None, smooth=4):
+def layer(body, name, VI, pred, offset, mats, face_mat=None, smooth=4, hems=(), rim=True):
+    """Pakaian dari permukaan tubuh: dihaluskan (kain menutup otot), digembungkan (longgar),
+    tepi ditarik lurus ke garis potong (hems) dan diberi lipatan ke dalam (rim) supaya tampak punya ketebalan."""
     o = body.copy(); o.data = body.data.copy(); o.name = name; o.data.name = name
     bpy.context.scene.collection.objects.link(o)
     bm = bmesh.new(); bm.from_mesh(o.data)
     bm.verts.ensure_lookup_table()
+    la = bm.verts.layers.int.new('is_arm')
+    for v in bm.verts: v[la] = 1 if VI[v.index][2] else 0
     keep = set(f for f in bm.faces if all(pred(*VI[v.index]) for v in f.verts))
     bmesh.ops.delete(bm, geom=[f for f in bm.faces if f not in keep], context='FACES')
     bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
+    if not bm.faces:
+        bm.free(); bpy.data.objects.remove(o, do_unlink=True); return None
+    # tepi lurus: vertex batas ditarik ke bidang potong terdekat
+    for v in bm.verts:
+        if not v.is_boundary: continue
+        for ax, val in hems:
+            if ax == 'x':
+                if v[la] and abs(abs(v.co.x) - val) < 0.08: v.co.x = math.copysign(val, v.co.x)
+            elif not v[la] and abs(v.co.z - val) < 0.08: v.co.z = val
     bm.normal_update()
     inner = [v for v in bm.verts if not v.is_boundary]
     for _ in range(smooth):
         bmesh.ops.smooth_vert(bm, verts=inner, factor=0.5, use_axis_x=True, use_axis_y=True, use_axis_z=True)
     bm.normal_update()
+    nrm = {v: v.normal.copy() for v in bm.verts}
     for v in bm.verts:
-        v.co += v.normal * offset
+        v.co += nrm[v] * offset
     for f in bm.faces:
         f.material_index = face_mat(f.calc_center_median()) if face_mat else 0
+    if rim:
+        be = [e for e in bm.edges if e.is_boundary]
+        src = {tuple(round(c, 5) for c in v.co): nrm[v] for e in be for v in e.verts}
+        ext = bmesh.ops.extrude_edge_only(bm, edges=be)
+        for v in (x for x in ext['geom'] if isinstance(x, bmesh.types.BMVert)):
+            n = src.get(tuple(round(c, 5) for c in v.co))
+            if n is not None: v.co -= n * (offset * 1.08)
     o.data.materials.clear()  # (clear() me-reset material_index, jadi set slot dulu baru tulis mesh)
     for m in mats: o.data.materials.append(m)
     bm.to_mesh(o.data); bm.free()
-    return o if len(o.data.polygons) else (bpy.data.objects.remove(o, do_unlink=True) or None)
+    return o
 
 
 def cut_body(body, VI, pred):
@@ -606,10 +627,10 @@ def build_hero(hero, preview=False, export=True):
     gloves = lambda co, w, a: a and abs(co.x) > lm.wrist_x - 0.03
     jacket_on = bool(spec.get('jacket'))
     # --- lapisan (urutan offset: kemeja < celana < sabuk < jaket < rompi)
-    layer(body, 'Shirt', VI, shirt, 0.016, [M['Shirt']])
-    layer(body, 'Pants', VI, pants, 0.02, [M['Pants']], smooth=6)
-    layer(body, 'Belt', VI, lambda co, w, a: lm.waist - 0.005 <= co.z <= lm.waist + 0.035 and not a, 0.026, [M['Belt']], smooth=2)
-    if not spec.get('shoes'): layer(body, 'Boots', VI, boots, 0.03, [M['Boots']], smooth=3)
+    layer(body, 'Shirt', VI, shirt, 0.024, [M['Shirt']], smooth=7, hems=(('z', lm.waist - 0.01), ('x', sleeve_x)))
+    layer(body, 'Pants', VI, pants, 0.03, [M['Pants']], smooth=9, hems=(('z', lm.waist + 0.035), ('z', boot_top - 0.02)))
+    layer(body, 'Belt', VI, lambda co, w, a: lm.waist - 0.005 <= co.z <= lm.waist + 0.035 and not a, 0.036, [M['Belt']], smooth=3, hems=(('z', lm.waist - 0.005), ('z', lm.waist + 0.035)))
+    if not spec.get('shoes'): layer(body, 'Boots', VI, boots, 0.036, [M['Boots']], smooth=4, hems=(('z', boot_top),))
     for side in ('l', 'r'):
         sh = make_shoe(arm, side, M, high=not spec.get('shoes'))
         bone_parent(sh, arm, 'foot_' + side)
@@ -618,15 +639,15 @@ def build_hero(hero, preview=False, export=True):
         jz = (lm.knee + 0.16) if 'longcoat' in gear else lm.waist - 0.09
         opening = lambda co: co.y < -0.02 and abs(co.x) < 0.035 + max(0, (co.z - lm.waist)) * 0.18 and co.z > lm.waist - 0.02
         layer(body, 'Jacket', VI, lambda co, w, a: ((jz <= co.z <= lm.neck + 0.05 and neckw(w) < 0.6 and not a) or (a and abs(co.x) < lm.wrist_x - 0.03)) and not opening(co),
-              0.03, [M['Jacket']], smooth=5)
+              0.042, [M['Jacket']], smooth=8, hems=(('z', jz), ('x', lm.wrist_x - 0.03)))
     if spec.get('vest'):
         refl = spec.get('reflect')
         fm = (lambda c: 1 if refl and (abs(c.z - (lm.waist + 0.12)) < 0.032 or abs(c.z - (lm.waist + 0.28)) < 0.032) else 0)
-        layer(body, 'Vest', VI, lambda co, w, a: lm.waist + 0.02 <= co.z <= lm.neck - 0.045 and (w.get('clavicle_l', 0) + w.get('clavicle_r', 0)) < 0.5 and not a, 0.036,
-              [M['Vest'], M['Accent']], face_mat=fm)
+        layer(body, 'Vest', VI, lambda co, w, a: lm.waist + 0.02 <= co.z <= lm.neck - 0.045 and (w.get('clavicle_l', 0) + w.get('clavicle_r', 0)) < 0.5 and not a, 0.046,
+              [M['Vest'], M['Accent']], face_mat=fm, smooth=7, hems=(('z', lm.waist + 0.02), ('z', lm.neck - 0.045)))
     sy = (arm.matrix_world @ arm.data.bones['spine_02'].head_local).y
     if 'apron' in gear:
-        layer(body, 'Apron', VI, lambda co, w, a: lm.knee + 0.08 <= co.z <= lm.neck - 0.14 and co.y < sy + 0.01 and not a, 0.045, [M['Gloves']], smooth=6)
+        layer(body, 'Apron', VI, lambda co, w, a: lm.knee + 0.08 <= co.z <= lm.neck - 0.14 and co.y < sy + 0.01 and not a, 0.056, [M['Gloves']], smooth=8, hems=(('z', lm.knee + 0.08), ('z', lm.neck - 0.14)))
     if 'bands' in gear:
         layer(body, 'Bands', VI, lambda co, w, a: (a and lm.wrist_x - 0.15 < abs(co.x) < lm.wrist_x - 0.1) or (not a and 0.36 < co.z < 0.41), 0.034, [M['Accent']], smooth=2)
     if 'kneepads' in gear:
@@ -636,14 +657,14 @@ def build_hero(hero, preview=False, export=True):
     if 'legstraps' in gear:
         layer(body, 'LegStraps', VI, lambda co, w, a: not a and (0.75 < co.z < 0.79), 0.032, [M['Straps']], smooth=2)
     if spec.get('straps'):
-        layer(body, 'Straps', VI, lambda co, w, a: lm.waist <= co.z <= lm.neck and not a and abs(abs(co.x) - 0.085) < 0.022, 0.03, [M['Straps']])
+        layer(body, 'Straps', VI, lambda co, w, a: lm.waist <= co.z <= lm.neck and not a and abs(abs(co.x) - 0.085) < 0.022, 0.05, [M['Straps']], rim=False)
     if spec.get('hat') == 'hijab':
         hc = lm.head_c
         def hij(co, w, a):
             head = (w.get('Head', 0) + w.get('neck_01', 0)) > 0.5 or co.z > lm.neck - 0.07 and abs(co.x) < 0.17 and not a
             face = co.y < hc.y - 0.035 and lm.neck + 0.035 < co.z < lm.head_top - 0.075 and abs(co.x) < 0.075
             return head and not face
-        layer(body, 'Hijab', VI, hij, 0.03, [M['Hat']], smooth=6)
+        layer(body, 'Hijab', VI, hij, 0.034, [M['Hat']], smooth=8)
     # --- buang kulit yang tertutup pakaian (hemat poligon, tidak tembus saat animasi)
     cut_body(body, VI, lambda co, w, a: shirt(co, w, a) or pants(co, w, a) or feet(co, w, a) or (not spec.get('shoes') and boots(co, w, a)) or (gloved and gloves(co, w, a)))
     # --- rambut
@@ -671,6 +692,14 @@ def build_hero(hero, preview=False, export=True):
     if spec.get('glasses') or spec.get('visor'):
         g = make_glasses(lm, M, eyes, visor=spec.get('visor'))
         bone_parent(g, arm, 'Head')
+    if spec.get('hat') != 'hijab' and 'scarf' not in gear:
+        nb = arm.matrix_world @ arm.data.bones['neck_01'].head_local
+        nr = min(0.072, max([abs(co.x) for co, w, a in VI if abs(co.z - (lm.neck + 0.03)) < 0.025 and w.get('neck_01', 0) > 0.6] or [0.06])) + 0.014
+        bmc = bmesh.new()
+        vs = add_torus(bmc, nr, 0.011, loc=(0, 0, 0), mat=0, seg=18, seg2=6)
+        bmesh.ops.transform(bmc, matrix=Matrix.Translation((0, nb.y + 0.006, lm.neck + 0.03)) @ Matrix.Rotation(math.radians(-14), 4, 'X') @ Matrix.Diagonal((1, 1.15, 2.4, 1)), verts=vs)
+        col = new_obj('Collar', bmc, [M['Jacket'] if spec.get('jacket') else M['Shirt']])
+        bone_parent(col, arm, 'neck_01')
     make_gear(spec, lm, M, VI, arm)
     ch = make_chest(spec, lm, M, VI)
     if ch: bone_parent(ch, arm, 'spine_03')

@@ -99,6 +99,16 @@ Balance di-tuning lewat `shared/data.js`; cek hasilnya dengan `node tools/simtes
 - **Kualitas adaptif**: tinggi (bloom + bayangan 2048), sedang (bayangan 1024), rendah (tanpa bayangan). Turun otomatis bila FPS < 33.
 - Aset CC0: tekstur/model/HDRI dari [Poly Haven](https://polyhaven.com) (`python tools/fetch_polyhaven.py`), model dibuat lewat `tools/blender/build_props.py`.
 
+## Role, jungle & showcase (v0.5)
+
+- **Map 5v5 ala MOBA**: 40 tumpukan kontainer sebagai dinding lane & lorong jungle, celah untuk gank, kantong camp.
+- **Role**: EXP Lane (atas, +35% EXP minion), Gold Lane (bawah, +35% Gold minion), Mid, Jungler, Roamer. Role disarankan per hero (Fighter→EXP, Assassin→Jungle, Mage→Mid, Marksman→Gold, Tank/Support→Roam); bot dibagi otomatis, role Anda tampil di HUD.
+- **Camp buff jungle**: 2 Genset Liar (buff merah: +12% damage, 75 dtk) dan 2 Kompresor Liar (buff biru: cooldown 30% lebih cepat). Bot jungler berburu camp lalu membantu lane.
+- **Bot bernavigasi dengan A\*** (grid 2 m) sehingga tidak tersangkut penghalang.
+- **Showcase di pemilihan hero**: model 3D hero memperagakan serangan dasar, ketiga jurus, lari, dan selebrasi, lengkap dengan nama jurus & role.
+- **Animasi lebih luwes**: badan atas menyerang sementara kaki tetap berlari, tubuh condong saat lari dan miring saat berbelok, jejak cahaya di tangan/senjata saat beraksi, debu langkah.
+- **Pakaian hero**: lebih longgar, tepi lengan/celana/jas lurus dengan lipatan ketebalan kain, kerah kemeja.
+
 ## Rencana berikutnya
 
 Fog of war untuk 5v5, camp jungle (Genset/Comp buff), draft pick & ban, model 3D minion & boss (kucing/anjing) dari Blender,

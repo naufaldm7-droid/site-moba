@@ -1,7 +1,7 @@
 // SITE CLASH — renderer Three.js: Abandoned Container Laydown Yard (golden hour), model prosedural ringan untuk HP.
 import * as THREE from 'three';
 import { MAPS, HEROES, STRUCT, SNAP_HZ, laneProject } from '/shared/data.js';
-import { makeHero, clipFor, ONE_SHOT, applySkin, roleColor, skillMove, runSpeedRef } from './models.js';
+import { makeHero, clipFor, ONE_SHOT, applySkin, roleColor, skillMove, runSpeedRef, FULL_BODY } from './models.js';
 import { buildWorld as buildWorldReal, setupEnvironment, makeProp } from './world.js';
 import { EffectComposer } from '/vendor/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '/vendor/jsm/postprocessing/RenderPass.js';
@@ -823,9 +823,11 @@ export class Renderer {
   }
 
   async attachProp(r) {
-    const name = r.k === 's' ? { water: 'tower_water', lightning: 'tower_lightning', base: 'office' }[r.s] : r.k === 'b' ? (r.s === 'apexcat' ? 'dozer' : 'excavator') : r.s;
+    const camp = r.k === 'b' && (r.s === 'genset' || r.s === 'comp');
+    const name = r.k === 's' ? { water: 'tower_water', lightning: 'tower_lightning', base: 'office' }[r.s] : r.k === 'b' ? (camp ? 'generator' : r.s === 'apexcat' ? 'dozer' : 'excavator') : r.s;
     const FUR = { cat: ['#a8682f', '#8a8580', '#3a2e26', '#c9a26a', '#d8d2c8', '#6a4a30'], dog: ['#8b5a2b', '#b38b5d', '#3a2e26', '#c9a26a'], mastiff: ['#4a3628', '#5a4636'] };
     const opts = r.k === 'm' ? { fur: FUR[r.s][r.id % FUR[r.s].length], shadowNodes: ['Body', 'Cart'] } : (r.k === 'b' && r.d.al ? { paint: r.tm === 0 ? '#3f7fd8' : '#d8483a' } : {});
+    if (camp) { opts.keep = true; opts.tint = r.s === 'genset' ? '#ffb0a0' : '#a0c8ff'; }
     const P = await makeProp(name, r.tm, opts);
     if (!P || !this.ents.has(r.id) || r.prop) return;
     const U = r.obj.userData;
@@ -853,6 +855,12 @@ export class Renderer {
       }
     } else if (r.k === 'm') {
       U.legs = ['LegFL', 'LegFR', 'LegBL', 'LegBR'].map(N); U.tail = N('Tail'); U.headN = N('Head');
+    } else if (camp) {
+      U.legs = []; U.aura = null; U.camp = true;
+      P.root.scale.setScalar(2.6);
+      const col = r.s === 'genset' ? 0xff4a2a : 0x3fa8ff;
+      const ring = mesh(GEO.ring, basicAdd(col, 0.7), 2.2, 2.2, 2.2, 0, 0.08, 0); ring.rotation.x = -Math.PI / 2; r.obj.add(ring); U.aura = ring;
+      const core = mesh(GEO.sph, basicAdd(col, 0.9), 0.28, 0.28, 0.28, 0, 2.3, 0); r.obj.add(core); U.core = core;
     } else {
       U.legs = []; U.aura = null;
       U.mach = { blade: N('Blade'), ripper: N('Ripper'), upper: N('Upper'), boom: N('Boom'), arm: N('Arm'), bucket: N('Bucket') };
@@ -892,9 +900,23 @@ export class Renderer {
     if (A.cur === act && !restart) return;
     if (ONE_SHOT.has(name)) { act.setLoop(THREE.LoopOnce, 1); act.clampWhenFinished = true; }
     else act.setLoop(THREE.LoopRepeat, Infinity);
-    act.reset().setEffectiveWeight(1).fadeIn(fade).play();
-    if (A.cur && A.cur !== act) A.cur.fadeOut(fade);
+    const same = A.cur && A.curName.split('@')[0] === name.split('@')[0] && !restart, t0 = same ? A.cur.time : 0;
+    act.reset().setEffectiveWeight(1).fadeIn(same ? 0.06 : fade).play();
+    if (same) act.time = t0;
+    if (A.cur && A.cur !== act) A.cur.fadeOut(same ? 0.06 : fade);
     A.cur = act; A.curName = name;
+  }
+
+  // lapisan badan atas (serang / cast) di atas gerak kaki
+  playOver(r, name, restart, speed) {
+    const A = r.anim, act = name ? A.actions[name] : null;
+    if (A.over && A.over !== act) { A.over.fadeOut(0.12); A.over = null; }
+    if (!act) return;
+    act.timeScale = speed;
+    if (A.over === act && !restart) return;
+    act.setLoop(THREE.LoopOnce, 1); act.clampWhenFinished = true;
+    act.reset().setEffectiveWeight(1).fadeIn(0.07).play();
+    A.over = act;
   }
 
   animateModel(r, dt, fl) {
@@ -910,8 +932,30 @@ export class Renderer {
     else if (fl & 2048) state = 'recall';
     else state = 'idle';
     const name = clipFor(r.s, state, slot, A.alt);
-    this.playClip(r, name, { speed, restart, fade: state === 'death' ? 0.08 : 0.14 });
+    const acting = state === 'cast' || state === 'attack';
+    if (acting && r.speed > 0.6 && !FULL_BODY.has(name)) {
+      // bergerak sambil beraksi: kaki tetap berlari, badan atas menyerang
+      const run = clipFor(r.s, 'run', 0, false);
+      this.playClip(r, run + '@L', { speed: Math.min(1.8, Math.max(0.75, r.speed / runSpeedRef(r.s))) });
+      this.playOver(r, name + '@U', restart, speed);
+    } else {
+      this.playOver(r, null);
+      this.playClip(r, name, { speed, restart, fade: state === 'death' ? 0.08 : 0.14 });
+    }
     A.mixer.update(dt);
+    // jejak cahaya senjata / tangan saat beraksi + debu langkah saat lari kencang
+    if (acting && !dead) {
+      if (!A.hand) A.hand = A.root.getObjectByName('hand_r') || A.root;
+      A.hand.getWorldPosition(tmpV);
+      const col = r.skinCol || '#ffffff';
+      for (let i = 0; i < 2; i++) this.glow.emit(tmpV.x + rand(-0.12, 0.12), tmpV.y + rand(-0.1, 0.1), tmpV.z + rand(-0.12, 0.12), 0, 0.2, 0, 0.28, state === 'cast' ? 0.75 : 0.5, col, 0);
+    } else if (state === 'sprint' || (state === 'run' && r.speed > 6.5)) {
+      if (Math.random() < dt * 14) this.burst(r.px, 0.1, r.pz, 1, ['#a89880', '#8a7a66'], { speed: 0.6, up: 0.8, life: 0.5, size: 0.14, grav: 1, noGlow: true });
+    }
+    // condong saat berlari & miring saat berbelok (biar tidak kaku)
+    let dA = r.toF - r.f; while (dA > Math.PI) dA -= Math.PI * 2; while (dA < -Math.PI) dA += Math.PI * 2;
+    A.bank = (A.bank || 0) + ((r.speed > 0.6 ? Math.max(-0.22, Math.min(0.22, -dA * 0.6)) : 0) - (A.bank || 0)) * Math.min(1, dt * 8);
+    A.runLean = (A.runLean || 0) + ((state === 'run' || state === 'sprint' ? Math.min(0.14, r.speed * 0.016) : 0) - (A.runLean || 0)) * Math.min(1, dt * 6);
     // gerak jurus: loncat / putar / condong menerobos sesuai skill
     const ct = now - r.castT, mv = ct < 0.6 ? skillMove(r.s, r.castSlot || 0) : null;
     let hop = 0, spin = 0, lean = 0;
@@ -923,7 +967,7 @@ export class Renderer {
       if (mv.hop && k >= 1 && !A.landed) { A.landed = true; this.burst(r.px, 0.2, r.pz, 14, ['#9a8a70', '#c8b8a0'], { speed: 5, up: 3, life: 0.6, size: 0.18, noGlow: true }); }
       if (k < 1) A.landed = false;
     }
-    A.root.rotation.y = spin; A.root.rotation.x = lean;
+    A.root.rotation.y = spin; A.root.rotation.x = lean + (A.runLean || 0); A.root.rotation.z = A.bank || 0;
     A.hop = hop;
     // efek skin: kilau emas (Epic), inti energi & aura (Legend), jejak neon saat lari (Elite)
     if (r.skin && !dead) {
@@ -1058,6 +1102,7 @@ export class Renderer {
       }
       case 'fx': this.skillFx(e); break;
       case 'over': this.victoryTeam = e.winner; break;
+      case 'camp': { const r = E(e.id); if (r) { this.textFx(r.px, 3.8, r.pz, e.k === 'red' ? 'BUFF MERAH' : 'BUFF BIRU', 'big gen'); this.ringFx(r.px, r.pz, 3, e.k === 'red' ? 0xff4a2a : 0x3fa8ff, 0.8); } break; }
     }
   }
 
@@ -1382,6 +1427,13 @@ export class Renderer {
       if (dead) { U.body.rotation.x = -Math.min(1.5, (now - (r.deadT || now)) * 5); U.body.position.y = 0.2; }
       else U.body.rotation.x = 0;
       }
+      const bf = r.d.bf || 0;
+      if (bf !== (r.bf || 0)) {
+        r.bf = bf;
+        if (U.buffRing) { r.obj.remove(U.buffRing); U.buffRing.material.dispose(); U.buffRing = null; }
+        if (bf) { U.buffRing = mesh(GEO.ring, basicAdd(bf === 3 ? 0xc05aff : bf === 1 ? 0xff4a2a : 0x3fa8ff, 0.8), 1.15, 1.15, 1.15, 0, 0.07, 0); U.buffRing.rotation.x = -Math.PI / 2; r.obj.add(U.buffRing); }
+      }
+      if (U.buffRing) { U.buffRing.rotation.z = -now * 2; if (Math.random() < dt * 6) this.glow.emit(r.px + rand(-0.7, 0.7), 0.2, r.pz + rand(-0.7, 0.7), 0, 1.6, 0, 0.7, 0.45, bf === 1 ? '#ff5a3a' : '#5ab8ff', -0.4); }
       U.stars.visible = !!(fl & 1) && !air; if (U.stars.visible) U.stars.rotation.y = now * 6;
       U.root.visible = !!(fl & 16);
       U.shield.visible = !!r.d.sh || !!(fl & 128);
@@ -1399,6 +1451,7 @@ export class Renderer {
       U.legs.forEach((l, i) => { l.rotation.x = moving ? Math.sin(r.phase + (i % 2 ? Math.PI : 0) + (i > 1 ? Math.PI / 2 : 0)) * 0.6 : 0; });
       const at = now - r.atkT;
       r.obj.position.y = !U.mach && at < 0.2 ? Math.sin(at / 0.2 * Math.PI) * 0.25 : 0;
+      if (U.camp) { r.prop.root.position.y = Math.abs(Math.sin(now * 30)) * 0.03; U.core.position.y = 2.3 + Math.sin(now * 3) * 0.2; if (Math.random() < dt * 5) this.burst(r.px, 1.6, r.pz, 1, ['#3a3a3a'], { speed: 0.3, up: 1.8, life: 1.2, size: 0.25, grav: -0.5, noGlow: true }); }
       if (U.tail) U.tail.rotation.y = Math.sin(now * 7 + r.id) * 0.35;
       if (U.headN) U.headN.rotation.x = at < 0.25 ? Math.sin(at / 0.25 * Math.PI) * 0.5 : Math.sin(now * 2 + r.id) * 0.06;
       if (U.mach) {
@@ -1445,7 +1498,7 @@ export class Renderer {
       if (!r.lbl) continue;
       if (r.hidden) continue;
       const o = r.d;
-      const h = r.k === 'h' ? (r.headY || 3.5) : r.k === 'm' ? (r.s === 'mastiff' ? 2.5 : r.s === 'dog' ? 2.0 : 1.5) : r.k === 'b' ? (r.s === 'cerberus' ? 6.3 : 4.3) : r.s === 'water' ? 11.4 : r.s === 'lightning' ? 14.6 : 11.8;
+      const h = r.k === 'h' ? (r.headY || 3.5) : r.k === 'm' ? (r.s === 'mastiff' ? 2.5 : r.s === 'dog' ? 2.0 : 1.5) : r.k === 'b' ? (r.s === 'cerberus' ? 6.3 : r.s === 'apexcat' ? 4.3 : 3.2) : r.s === 'water' ? 11.4 : r.s === 'lightning' ? 14.6 : 11.8;
       const p = this.project(r.px, h, r.pz);
       if (!p.vis || p.x < -80 || p.x > this.W + 80 || p.y < -40 || p.y > this.H + 40) { r.lbl.style.visibility = 'hidden'; continue; }
       r.lbl.style.visibility = '';

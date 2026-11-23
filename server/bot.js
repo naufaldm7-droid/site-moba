@@ -30,15 +30,11 @@ function shop(g, h) {
 
 // gerak (map blitz: lewat gerbang stockyard bila menyeberang lane <-> jungle)
 function steer(g, h, tx, tz, stop = 0.5) {
-  let gx = tx, gz = tz;
-  const gate = g.map.gate;
-  if (gate) {
-    const inJungle = h.z < gate.split + 0.5, tJungle = tz < gate.split - 1;
-    if (inJungle !== tJungle && Math.abs(h.x - gate.x) > 10) { gx = gate.x; gz = inJungle ? gate.zIn : gate.zOut; }
-  }
+  const wp = g.nav(h, tx, tz);                       // lewati penghalang dengan jalur A*
+  const gx = wp.x, gz = wp.z;
   const dx = gx - h.x, dz = gz - h.z;
   const L = Math.hypot(dx, dz);
-  if (L <= stop) return true;
+  if (L <= (wp.final ? stop : 0.4)) return !!wp.final;
   h.input.mx = dx / L; h.input.mz = dz / L;
   // anti-macet: kalau tidak bergerak, belok sedikit
   const b = h.brain;
@@ -231,6 +227,18 @@ export function botThink(g, h) {
       return;
     }
     b.obj = 0;
+  }
+
+  // ---- jungler: berburu camp buff terdekat (sisi sendiri dulu), lalu bantu lane tengah
+  if (b.role === 'jungle') {
+    const sp = g.map.spawn[h.team];
+    let camp = null, bs = Infinity;
+    for (const cp of g.camps()) { const s = dist(cp, h) + Math.hypot(cp.x - sp.x, cp.z - sp.z) * 0.6; if (s < bs) { bs = s; camp = cp; } }
+    if (camp && hr > 0.45) {
+      if (dist(h, camp) > c.range + camp.r + 0.6) steer(g, h, camp.x, camp.z, c.range + camp.r);
+      else { inp.atk = true; inp.tg = camp.id; if (h.hero !== 'hse') useSkills(g, h, camp, allies); }
+      return;
+    }
   }
 
   // ---- farming lane

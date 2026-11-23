@@ -1,8 +1,9 @@
 // SITE CLASH — client: jaringan, lobby, HUD, kontrol (PC & HP).
-import { HEROES, PLAYABLE, LOCKED_HEROES, ITEMS, SHOP_ORDER, itemCost, MAPS, ULT_LEVEL, S2_LEVEL, STRUCT } from '/shared/data.js';
+import { HEROES, PLAYABLE, LOCKED_HEROES, ITEMS, SHOP_ORDER, itemCost, MAPS, ROLES, heroRole, ULT_LEVEL, S2_LEVEL, STRUCT } from '/shared/data.js';
 import { Renderer, TEAM_HEX } from './render.js';
 import { initAudio, play, heroSfx, setSound, soundOn } from './sfx.js';
 import { preloadHero, loadClips, SKINS } from './models.js';
+import { Showcase } from './showcase.js';
 
 const $ = (id) => document.getElementById(id);
 const ART = (k) => `assets/art/${k}.jpg`;
@@ -74,6 +75,7 @@ const S = {
 };
 if (!PLAYABLE.includes(S.selHero)) S.selHero = 'structural';
 const R = new Renderer($('gl'), $('overlay'));
+const showcase = new Showcase();
 
 // ------------------------------------------------------------------ jaringan
 function send(m) { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(m)); }
@@ -203,8 +205,10 @@ function renderHeroDetail(k) {
   if (!H) return;
   const ic = SKILL_ICON[k];
   const lv = ['', ` <span class="muted">(Lv ${S2_LEVEL})</span>`, ` <span class="muted">(Ult · Lv ${ULT_LEVEL})</span>`];
-  $('hero-detail').innerHTML = `<img class="art" src="${ART(H.art)}" alt="">
+  const RL = ROLES[heroRole(k)];
+  $('hero-detail').innerHTML = `<div id="showcase-slot" style="background-image:url(${ART(H.art)})"></div>
     <h2>${esc(H.name)}</h2><div class="role">${esc(H.role)}</div>
+    <div class="rolechip">${RL.icon} <b>${esc(RL.name)}</b> — ${esc(RL.desc)}</div>
     <div class="sk"><div class="ic">★</div><div><b>Pasif · ${esc(H.passive.name)}</b><br><span>${esc(H.passive.desc)}</span></div></div>
     ${H.skills.map((s, i) => `<div class="sk"><div class="ic">${ic[i]}</div><div><b>${'QER'[i]} · ${esc(s.name)}</b>${lv[i]}<br><span>${esc(s.desc)} CD ${s.cd} dtk.</span></div></div>`).join('')}
     <div class="muted" style="margin-top:10px">Skin (semua terbuka)</div>
@@ -214,6 +218,8 @@ function renderHeroDetail(k) {
   $('hero-detail').querySelectorAll('[data-skin]').forEach((b) => {
     b.onclick = () => { S.skin = +b.dataset.skin; store.set('skin', S.skin); send({ t: 'skin', skin: S.skin }); play('SFX_UI_Click_Hardhat'); renderHeroDetail(k); };
   });
+  $('showcase-slot').appendChild(showcase.el);
+  showcase.show(k, S.skin);
 }
 
 // ------------------------------------------------------------------ game start / snapshot
@@ -250,7 +256,8 @@ function enterGame(m) {
     : '<b>WASD</b> jalan · <b>SPASI</b> tahan serang · <b>Q / E / R</b> skill (bidik dengan mouse, lepas untuk cast)<br><b>B</b> recall · <b>P</b> toko · <b>Tab</b> papan skor · scroll = zoom';
   help.classList.remove('hidden');
   clearTimeout(S.helpT); S.helpT = setTimeout(() => help.classList.add('hidden'), 9000);
-  banner('PROYEK DIMULAI!', 'Lindungi Kontainer Office — hancurkan milik lawan');
+  S.role = mine && mine.rl && S.map.big ? ROLES[mine.rl] : null;
+  banner(S.role ? `ROLE: ${S.role.name.toUpperCase()}` : 'PROYEK DIMULAI!', S.role ? S.role.desc : 'Lindungi Kontainer Office — hancurkan milik lawan');
 }
 
 function onSnap(m) {
@@ -290,6 +297,7 @@ function uiEvent(e) {
     case 'arm': play(e.k === 'lightning' ? 'SFX_Turret_Lightning_Ready' : 'SFX_Base_Container_Ready', 0.9); break;
     case 'die': if (e.k === 'struct') play('SFX_Struct_Collapse', 1); break;
     case 'dmg': if (e.id === meId && e.v > 40) play('SFX_Hit', 0.5, 0.15); break;
+    case 'camp': if (e.team === S.team) toast(`${e.n} mendapat ${e.k === 'red' ? 'Buff Merah (+12% damage)' : 'Buff Biru (cooldown lebih cepat)'}`, 2400); break;
     case 'bush': if (e.id === meId) play('SFX_Env_Bush_Rustle', 0.8); break;
     case 'lvl': if (e.id === meId) play('SFX_UI_Level', 0.8); break;
     case 'gold': if (e.id === meId) play('SFX_UI_Gold', 0.4, 0.1); break;
@@ -719,7 +727,7 @@ function hudFrame(dt) {
   const me = S.me;
   if (!me || !S.heroId) return;
   const mine = S.sb.find((x) => x.id === S.heroId);
-  if (mine) $('kda').textContent = `K/D/A ${mine.k}/${mine.d}/${mine.a}`;
+  if (mine) $('kda').textContent = `${S.role ? S.role.icon + ' ' + S.role.name + ' · ' : ''}K/D/A ${mine.k}/${mine.d}/${mine.a}`;
   $('gold-v').textContent = me.gold;
   const ent = myEnt();
   const hp = ent ? ent.d.hp : 0, mh = ent ? ent.d.mh : 1;
@@ -770,7 +778,7 @@ function loop(t) {
     if (S.heroId) R.predict(S.input, dt, ms);
     R.frame(dt, S.input);
     hudFrame(dt);
-  }
+  } else showcase.tick(dt);
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);

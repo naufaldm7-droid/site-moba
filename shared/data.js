@@ -96,6 +96,20 @@ const fullWallsHalf = [
   { x1: 48, z1: 66, x2: 62, z2: 72, c: 'orange', stack: 2 },
   { x1: 30, z1: 80, x2: 36, z2: 96, c: 'green', stack: 1 },
   { x1: 50, z1: 84, x2: 64, z2: 90, c: 'orange', stack: 2 },
+  // dinding pembatas lane (ada celah untuk gank), lorong jungle & kantong camp — ala MOBA
+  { x1: 23, z1: 30, x2: 26, z2: 42, c: 'blue', stack: 1 },
+  { x1: 23, z1: 100, x2: 26, z2: 112, c: 'orange', stack: 2 },
+  { x1: 30, z1: 23, x2: 42, z2: 26, c: 'green', stack: 1 },
+  { x1: 98, z1: 23, x2: 110, z2: 26, c: 'orange', stack: 2 },
+  { x1: 84, z1: 44, x2: 96, z2: 47, c: 'blue', stack: 2 },
+  { x1: 102, z1: 30, x2: 105, z2: 42, c: 'green', stack: 1 },
+  { x1: 42, z1: 100, x2: 45, z2: 106, c: 'green', stack: 2 },
+  { x1: 76, z1: 58, x2: 82, z2: 61, c: 'orange', stack: 1 },
+  { x1: 40, z1: 56, x2: 43, z2: 62, c: 'orange', stack: 1 },
+  { x1: 86, z1: 30, x2: 92, z2: 33, c: 'blue', stack: 1 },
+  { x1: 44, z1: 76, x2: 47, z2: 82, c: 'blue', stack: 1 },
+  { x1: 40, z1: 132, x2: 52, z2: 135, c: 'orange', stack: 1 },
+  { x1: 58, z1: 40, x2: 64, z2: 43, c: 'green', stack: 1 },
 ];
 const fullBushHalf = [
   { x1: 68, z1: 22, x2: 80, z2: 27 },
@@ -126,7 +140,11 @@ const FULL = {
   pits: [
     { x: 54, z: 54, r: 6.5, type: 'apexcat', spawnAt: 90, respawn: 120 }, // Turtle
     { x: 106, z: 106, r: 7, type: 'cerberus', spawnAt: 360, respawn: 180 }, // Lord
+    // camp buff jungle (sesuai denah: RED = Genset, BLUE = Compressor)
+    { x: 78, z: 40, r: 3.4, type: 'genset', spawnAt: 25, respawn: 80 }, { x: 82, z: 120, r: 3.4, type: 'genset', spawnAt: 25, respawn: 80 },
+    { x: 40, z: 68, r: 3.4, type: 'comp', spawnAt: 25, respawn: 80 }, { x: 120, z: 92, r: 3.4, type: 'comp', spawnAt: 25, respawn: 80 },
   ],
+  laneBonus: { top: { xp: 1.35 }, bot: { gold: 1.35 } },   // EXP lane & Gold lane
   // lane top tim biru = sisi kiri + atas layar biru; cerminannya jadi lane bot tim merah
   lanes: {
     top: [[15, 131], [15, 15], [131, 15]],
@@ -165,6 +183,8 @@ export const MINION = {
 
 export const BOSS = {
   apexcat: { name: 'Rust Dozer D9', hp: 5200, dmg: 120, range: 2.6, interval: 1.2, ms: 6, r: 1.6, armor: 35, mres: 30, gold: 140, xp: 200, spawnAt: 75, respawn: 90 },
+  genset: { name: 'Genset Liar (Buff Merah)', camp: 'red', hp: 2300, dmg: 62, range: 2.6, interval: 1.3, ms: 4.5, r: 1.2, armor: 18, mres: 18, gold: 75, xp: 120, spawnAt: 25, respawn: 80 },
+  comp: { name: 'Kompresor Liar (Buff Biru)', camp: 'blue', hp: 2300, dmg: 62, range: 2.6, interval: 1.3, ms: 4.5, r: 1.2, armor: 18, mres: 18, gold: 75, xp: 120, spawnAt: 25, respawn: 80 },
   cerberus: { name: 'Iron Claw Excavator', hp: 11000, dmg: 190, range: 3.2, interval: 1.4, ms: 5.5, r: 2.2, armor: 55, mres: 45, gold: 220, xp: 320, spawnAt: 240, respawn: 120 },
 };
 
@@ -265,6 +285,19 @@ export const HEROES = {
 };
 Object.assign(HEROES, EXT_HEROES);
 export const PLAYABLE = Object.keys(HEROES);
+
+// ---------------------------------------------------------------- ROLE (ala MOBA: EXP, Jungle, Mid, Gold, Roam)
+export const ROLES = {
+  exp: { name: 'EXP Lane', lane: 'top', icon: '⚔️', desc: 'Lane atas — minion memberi +35% EXP. Cocok untuk Fighter.' },
+  jungle: { name: 'Jungler', lane: 'mid', icon: '🌿', desc: 'Berburu Genset (buff merah) & Kompresor (buff biru), lalu gank. Cocok untuk Assassin.' },
+  mid: { name: 'Mid Lane', lane: 'mid', icon: '✨', desc: 'Lane tengah terpendek — rotasi cepat ke Turtle/Lord. Cocok untuk Mage.' },
+  gold: { name: 'Gold Lane', lane: 'bot', icon: '🪙', desc: 'Lane bawah — minion memberi +35% Gold. Cocok untuk Marksman.' },
+  roam: { name: 'Roamer', lane: 'bot', icon: '🛡️', desc: 'Menjaga Gold laner, buka vision, inisiasi. Cocok untuk Tank & Support.' },
+};
+const CLS_BASE = { structural: 'fighter', hse: 'support', drafter: 'assassin', qs: 'marksman', surveyor: 'marksman' };
+const CLS_ROLE = { fighter: 'exp', tank: 'roam', assassin: 'jungle', mage: 'mid', marksman: 'gold', support: 'roam' };
+export const heroClass = (k) => (HEROES[k] && HEROES[k].cls) || CLS_BASE[k] || 'fighter';
+export const heroRole = (k) => CLS_ROLE[heroClass(k)];
 
 // semua 20 hero sudah terbuka; daftar lama disimpan sebagai referensi
 export const LOCKED_HEROES = [];

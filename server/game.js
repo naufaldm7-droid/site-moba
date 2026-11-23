@@ -1,7 +1,7 @@
 // SITE CLASH — simulasi pertandingan (server-authoritative).
 import {
   TICK_HZ, MAPS, STRUCT, MINION, BOSS, WAVE, HEROES, ITEMS, START_GOLD, PASSIVE_GOLD,
-  MAX_LEVEL, xpForLevel, respawnTime, ULT_LEVEL, S2_LEVEL, itemCost, laneProject, lanePoint,
+  MAX_LEVEL, xpForLevel, respawnTime, ULT_LEVEL, S2_LEVEL, itemCost, laneProject, lanePoint, ROLES, heroRole,
 } from '../shared/data.js';
 import { botThink } from './bot.js';
 
@@ -62,6 +62,8 @@ export class Game {
     this.opts = opts;
     for (const st of this.map.structures) this.spawnStructure(st);
     for (const s of slots) this.spawnHero(s);
+    this.assignRoles();
+    this.buildNav();
     this.ev({ t: 'start' });
     this.otAnnounced = false;
   }
@@ -71,7 +73,88 @@ export class Game {
   inFountain(u, team) { return inRectRaw(u.x, u.z, this.map.fountain[team]); }
   lane(key) { return this.map.laneData[key]; }
   // boss netral yang sedang hidup
-  bosses() { const out = []; for (const p of this.pits) { const b = p.bossId && this.ents.get(p.bossId); if (b && !b.dead) out.push(b); } return out; }
+  camps() { const out = []; for (const p of this.pits) { const b = p.bossId && this.ents.get(p.bossId); if (b && !b.dead && BOSS[b.type].camp) out.push(b); } return out; }
+
+  // bagi role per tim: Jungle, Mid, Gold, EXP, Roam (5v5). Map 3v3: semua di lane tengah.
+  assignRoles() {
+    for (const team of [0, 1]) {
+      const hs = this.heroes.filter((h) => h.team === team);
+      const order = this.map.big ? ['jungle', 'mid', 'gold', 'exp', 'roam'] : [];
+      const left = new Set(hs);
+      const give = (h, role) => { h.role = role; h.brain.role = role; h.brain.lane = ROLES[role].lane; left.delete(h); };
+      for (const role of order) { const h = [...left].find((x) => heroRole(x.hero) === role); if (h) give(h, role); }
+      for (const role of order) { if (!left.size) break; if (!hs.some((x) => x.role === role)) give([...left][0], role); }
+      for (const h of left) give(h, this.map.big ? 'roam' : 'mid');
+    }
+  }
+
+  // ------------------------------------------------------------ navigasi bot (grid A*)
+  buildNav() {
+    const C = 2, M = this.map, w = Math.ceil(M.w / C), h = Math.ceil(M.h / C), ok = new Uint8Array(w * h);
+    for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) ok[z * w + x] = mapFree(M, (x + 0.5) * C, (z + 0.5) * C, 0.85) ? 1 : 0;
+    this.navG = { C, w, h, ok };
+  }
+  los(ax, az, bx, bz) {
+    const n = Math.ceil(Math.hypot(bx - ax, bz - az));
+    for (let i = 1; i < n; i++) { const t = i / n; if (!this.free(ax + (bx - ax) * t, az + (bz - az) * t, 0.6)) return false; }
+    return true;
+  }
+  navCell(x, z) {
+    const { C, w, h, ok } = this.navG;
+    let cx = Math.min(w - 1, Math.max(0, Math.floor(x / C))), cz = Math.min(h - 1, Math.max(0, Math.floor(z / C)));
+    if (ok[cz * w + cx]) return cz * w + cx;
+    for (let r = 1; r < 6; r++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      const nx = cx + dx, nz = cz + dz;
+      if (nx >= 0 && nz >= 0 && nx < w && nz < h && ok[nz * w + nx]) return nz * w + nx;
+    }
+    return -1;
+  }
+  findPath(ax, az, bx, bz) {
+    const { C, w, h, ok } = this.navG;
+    const s = this.navCell(ax, az), e = this.navCell(bx, bz);
+    if (s < 0 || e < 0) return [];
+    const g = new Float32Array(w * h).fill(Infinity), from = new Int32Array(w * h).fill(-1), closed = new Uint8Array(w * h);
+    const ex = e % w, ez = (e / w) | 0;
+    const heap = [[0, s]]; g[s] = 0;
+    const push = (f, i) => { heap.push([f, i]); let k = heap.length - 1; while (k > 0) { const p = (k - 1) >> 1; if (heap[p][0] <= heap[k][0]) break; [heap[p], heap[k]] = [heap[k], heap[p]]; k = p; } };
+    const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let k = 0; for (;;) { let m = k; const l = 2 * k + 1, r = l + 1; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === k) break; [heap[m], heap[k]] = [heap[k], heap[m]]; k = m; } } return top; };
+    let guard = 0;
+    while (heap.length && guard++ < 9000) {
+      const cur = pop()[1];
+      if (cur === e) break;
+      if (closed[cur]) continue;
+      closed[cur] = 1;
+      const cx = cur % w, cz = (cur / w) | 0;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dz) continue;
+        const nx = cx + dx, nz = cz + dz;
+        if (nx < 0 || nz < 0 || nx >= w || nz >= h) continue;
+        const ni = nz * w + nx;
+        if (!ok[ni] || closed[ni]) continue;
+        if (dx && dz && (!ok[cz * w + nx] || !ok[nz * w + cx])) continue;   // jangan potong sudut
+        const ng = g[cur] + (dx && dz ? 1.414 : 1);
+        if (ng < g[ni]) { g[ni] = ng; from[ni] = cur; push(ng + Math.hypot(ex - nx, ez - nz), ni); }
+      }
+    }
+    if (from[e] < 0 && e !== s) return [];
+    const pts = [];
+    for (let c = e; c >= 0 && c !== s; c = from[c]) pts.push({ x: (c % w + 0.5) * C, z: (((c / w) | 0) + 0.5) * C });
+    pts.reverse(); pts.push({ x: bx, z: bz });
+    return pts;
+  }
+  // titik berikutnya menuju (tx,tz): langsung bila terlihat, selain itu ikuti jalur A*
+  nav(h, tx, tz) {
+    if (this.los(h.x, h.z, tx, tz)) return { x: tx, z: tz, final: true };
+    const b = h.brain;
+    if (!b.path || this.time > b.path.until || (b.path.tx - tx) ** 2 + (b.path.tz - tz) ** 2 > 16) b.path = { tx, tz, until: this.time + 2, pts: this.findPath(h.x, h.z, tx, tz), i: 0 };
+    const P = b.path;
+    if (!P.pts.length) return { x: tx, z: tz, final: true };
+    for (let k = P.pts.length - 1; k >= P.i; k--) { const q = P.pts[k]; if (this.los(h.x, h.z, q.x, q.z)) { P.i = k; return { x: q.x, z: q.z, final: k === P.pts.length - 1 }; } }
+    const q = P.pts[Math.min(P.i, P.pts.length - 1)];
+    return { x: q.x, z: q.z, final: false };
+  }
+
+  bosses() { const out = []; for (const p of this.pits) { const b = p.bossId && this.ents.get(p.bossId); if (b && !b.dead && !BOSS[b.type].camp) out.push(b); } return out; }
   add(e) { e.id = this.nextId++; this.ents.set(e.id, e); return e; }
   at(delay, fn) { this.pending.push({ at: this.time + delay, fn }); }
 
@@ -101,7 +184,7 @@ export class Game {
       cds: [0, 0, 0], atkCd: 0, kills: 0, deaths: 0, assists: 0,
       input: { mx: 0, mz: 0, atk: false }, casts: [], history: [], histT: 0,
       recallUntil: 0, nextAtkBonus: 0, aftershock: false, trafoCd: 0, meshShield: 0, meshNext: 0, harnessReady: 0,
-      s1RecastUntil: 0, brain: { lane: this.map.botLanes[idx % this.map.botLanes.length] }, moving: false, goldEarned: 0,
+      s1RecastUntil: 0, brain: { lane: this.map.botLanes[idx % this.map.botLanes.length] }, moving: false, goldEarned: 0, redUntil: 0, blueUntil: 0,
     });
     initStatus(h);
     this.calcStats(h);
@@ -158,7 +241,7 @@ export class Game {
     initStatus(u);
     pit.bossId = u.id;
     const where = this.mode === 'blitz' ? 'Stockyard' : type === 'apexcat' ? 'Turtle Pit' : 'Lord Pit';
-    this.ev({ t: 'boss', k: type, msg: `${B.name} muncul di ${where}!` });
+    if (!B.camp) this.ev({ t: 'boss', k: type, msg: `${B.name} muncul di ${where}!` });
   }
 
   spawnAllyCerberus(team, pit) {
@@ -255,6 +338,7 @@ export class Game {
     }
     if (t.kind === 'struct' && now > this.map.overtime) amt *= 1 + (now - this.map.overtime) / 240; // overtime: struktur makin rapuh
     if (src.kind === 'struct' && t.kind === 'minion') amt *= 0.5;
+    if (src.kind === 'hero' && src.redUntil > now) amt *= 1.12;                 // buff merah (Genset)
     if (src.kind === 'minion') for (const o of this.heroes) if (o.team === src.team && !o.dead && o.H.passive && o.H.passive.type === 'minionAura' && d2(o, src) < 64) { amt *= 1.3; break; } // turret mengikis minion pelan, beri waktu push
     // shield
     let shieldMult = 1;
@@ -363,9 +447,10 @@ export class Game {
     if (t.kind === 'minion') {
       const M = MINION[t.type];
       const hk = src.kind === 'hero' ? src : null;
-      if (hk) this.giveGold(hk, M.gold);
+      const lb = (this.map.laneBonus && this.map.laneBonus[t.lane]) || {};
+      if (hk) this.giveGold(hk, M.gold * (lb.gold || 1));
       for (const h of this.heroes) if (!h.dead && h.team !== t.team && d2(h, t) < 121) {
-        this.giveXp(h, M.xp);
+        this.giveXp(h, M.xp * (lb.xp || 1));
         if (h !== hk) this.giveGold(h, Math.round(M.gold * 0.25), true);
       }
     } else if (t.kind === 'struct') {
@@ -381,7 +466,15 @@ export class Game {
     } else if (t.kind === 'boss' && !t.ally) {
       const B = BOSS[t.type];
       const team = src.team === 2 ? null : src.team;
-      if (team !== null) {
+      if (B.camp) {
+        const k = src.kind === 'hero' ? src : this.lastHeroAttacker(t);
+        if (k) {
+          this.giveGold(k, B.gold); this.giveXp(k, B.xp);
+          k[B.camp + 'Until'] = now + 75;
+          for (const h of this.heroes) if (h !== k && h.team === k.team && !h.dead && d2(h, t) < 100) this.giveXp(h, B.xp * 0.5);
+          this.ev({ t: 'camp', k: B.camp, id: k.id, team: k.team, n: k.name });
+        }
+      } else if (team !== null) {
         for (const h of this.heroes) if (h.team === team) {
           this.giveGold(h, B.gold, true); this.giveXp(h, B.xp);
           if (t.type === 'apexcat' && !h.dead) this.shield(h, 450 + 30 * h.lvl, 60);
@@ -632,7 +725,8 @@ export class Game {
     // copper mesh
     if (h.has.has('mesh') && now >= h.meshNext) { h.meshShield = 300 + h.lvl * 15; h.meshNext = now + 15; }
     // cooldowns
-    for (let i = 0; i < 3; i++) if (h.cds[i] > 0) h.cds[i] = Math.max(0, h.cds[i] - DT);
+    const cdk = h.blueUntil > now ? 1.3 : 1;                                     // buff biru (Kompresor): cooldown 30% lebih cepat
+    for (let i = 0; i < 3; i++) if (h.cds[i] > 0) h.cds[i] = Math.max(0, h.cds[i] - DT * cdk);
     if (h.atkCd > 0) h.atkCd -= DT;
     if (h.s1RecastUntil && now > h.s1RecastUntil) { h.s1RecastUntil = 0; h.cds[0] = Math.max(h.cds[0], this.skillCd(h, 0) - 3); }
     // history for CTRL+Z
@@ -1464,7 +1558,7 @@ export class Game {
       if (e.markUntil > now) fl |= 4096;
       if (e.kind === 'struct' && e.armed) fl |= 8192;
       const o = { i: e.id, k: e.kind[0], tm: e.team, x: r1(e.x), z: r1(e.z), f: r1(e.f || 0), hp: Math.round(e.hp), mh: e.maxHp, fl };
-      if (e.kind === 'hero') { o.s = e.hero; o.n = e.name; o.lv = e.lvl; if (e.skin) o.sk = e.skin; const sh = this.shieldOf(e); if (sh > 0) o.sh = Math.round(sh); }
+      if (e.kind === 'hero') { o.s = e.hero; o.n = e.name; o.lv = e.lvl; if (e.skin) o.sk = e.skin; const bf = (e.redUntil > now ? 1 : 0) | (e.blueUntil > now ? 2 : 0); if (bf) o.bf = bf; const sh = this.shieldOf(e); if (sh > 0) o.sh = Math.round(sh); }
       else o.s = e.type;
       if (e.ally) o.al = 1;
       ents.push(o);
@@ -1484,6 +1578,6 @@ export class Game {
   }
 
   scoreboard() {
-    return this.heroes.map((h) => ({ id: h.id, n: h.name, s: h.hero, sk: h.skin, tm: h.team, lv: h.lvl, k: h.kills, d: h.deaths, a: h.assists, g: Math.round(h.goldEarned), bot: h.bot ? 1 : 0, items: h.items }));
+    return this.heroes.map((h) => ({ id: h.id, n: h.name, s: h.hero, sk: h.skin, rl: h.role, tm: h.team, lv: h.lvl, k: h.kills, d: h.deaths, a: h.assists, g: Math.round(h.goldEarned), bot: h.bot ? 1 : 0, items: h.items }));
   }
 }

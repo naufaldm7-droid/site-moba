@@ -111,6 +111,7 @@ export async function makeProp(name, team = 2, opts = {}) {
   root.traverse((o) => {
     if (!o.isMesh) return;
     const apply = (mt) => {
+      if (opts.keep) { const k = mt.clone(); if (opts.tint && k.color) k.color.set(opts.tint); return k; }
       let m = libMat(mt.name, team);
       if (UNIQUE.has(mt.name) || (opts.fur && mt.name === 'Fur') || (opts.paint && mt.name === 'Paint')) {
         m = m.clone(); m.name = mt.name;

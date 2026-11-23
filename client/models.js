@@ -7,6 +7,8 @@ const loader = new GLTFLoader();
 const tpl = new Map();     // hero -> Promise<gltf>
 let clipsP = null;
 export const CLIPS = new Map(); // nama -> AnimationClip
+const UPPER = /^(spine_02|spine_03|neck_01|Head|clavicle_|upperarm_|lowerarm_|hand_|index_|middle_|pinky_|ring_|thumb_)/;
+export const FULL_BODY = new Set(['Roll', 'Jump_Start', 'Jump_Land', 'Sprint_Loop', 'PickUp_Table', 'Death01', 'Hit_Chest', 'Dance_Loop']);
 
 export function loadClips() {
   if (!clipsP) {
@@ -15,6 +17,10 @@ export function loadClips() {
         // buang track posisi selain pelvis supaya proporsi tiap hero tidak berubah
         c.tracks = c.tracks.filter((t) => !t.name.endsWith('.position') || t.name.startsWith('pelvis'));
         CLIPS.set(c.name, c);
+        // varian badan atas (@U) & bawah (@L): menyerang sambil berlari tanpa kaki "meluncur"
+        const isUp = (t) => UPPER.test(t.name.split('.')[0]);
+        CLIPS.set(c.name + '@U', new THREE.AnimationClip(c.name + '@U', c.duration, c.tracks.filter(isUp)));
+        CLIPS.set(c.name + '@L', new THREE.AnimationClip(c.name + '@L', c.duration, c.tracks.filter((t) => !isUp(t))));
       }
       return CLIPS;
     });
