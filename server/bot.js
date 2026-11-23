@@ -78,6 +78,21 @@ function useSkills(g, h, e, allies) {
       if (dd < 17) cast(h, 1, e.x, e.z, 0.3);
       if (dd < 28 && (er < 0.5 || disabled)) cast(h, 2, e.x, e.z, 0.5);
       break;
+    default:
+      if (!h.H.gen) break;
+      for (let slot = 0; slot < 3; slot++) {
+        const S = h.H.skills[slot];
+        if (slot === 2 && !(er < 0.6 || dd < 4 || disabled)) continue;
+        // non-melee jangan dash menerjang ke tengah musuh kecuali target hampir mati
+        if (S.area && (S.area.shape === 'dash' || S.area.dashTo) && !h.H.melee && er > 0.35) continue;
+        if (S.ally) {
+          const low = allies.filter((a) => a.hp / a.maxHp < 0.75).sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
+          if (low && dist(low, h) < (S.range || 8)) cast(h, slot, low.x, low.z, 0.2);
+        } else if (S.kind === 'self') {
+          if (dd < (S.aoe || 4) + 1 || (S.allies && dd < 9)) cast(h, slot, h.x, h.z, 0);
+        } else if (dd <= (S.range || 6) + 0.5) cast(h, slot, e.x, e.z, S.kind === 'point' ? 0.5 : 0.25);
+      }
+      break;
   }
 }
 

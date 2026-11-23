@@ -2,6 +2,7 @@
 import { HEROES, PLAYABLE, LOCKED_HEROES, ITEMS, SHOP_ORDER, itemCost, MAPS, ULT_LEVEL, S2_LEVEL, STRUCT } from '/shared/data.js';
 import { Renderer, TEAM_HEX } from './render.js';
 import { initAudio, play, heroSfx, setSound, soundOn } from './sfx.js';
+import { preloadHero, loadClips, SKINS } from './models.js';
 
 const $ = (id) => document.getElementById(id);
 const ART = (k) => `assets/art/${k}.jpg`;
@@ -18,6 +19,21 @@ const SKILL_ICON = {
   drafter: ['📐', '👻', '↩️'],
   qs: ['📄', '🔍', '💰'],
   surveyor: ['🛸', '📏', '🛰️'],
+  architect: ['📏', '🪟', '🏛️'],
+  fabricator: ['🛡️', '⚙️', '🏗️'],
+  plumbing: ['🔧', '🛢️', '💦'],
+  electrical: ['⚡', '🌀', '🔌'],
+  electronic: ['🔴', '📶', '🗼'],
+  sales: ['📢', '🤝', '📜'],
+  supervisor: ['👉', '🚧', '🚛'],
+  procurement: ['📦', '🔗', '🪂'],
+  qaqc: ['📡', '🗡️', '⛔'],
+  commissioning: ['🔵', '💨', '🟢'],
+  crane: ['🪝', '⛓️', '🏋️'],
+  geotech: ['🟤', '🪨', '🕳️'],
+  hvac: ['🌬️', '❄️', '🌪️'],
+  doccontrol: ['🗂️', '🚫', '✅'],
+  pm: ['✨', '⏩', '👑'],
 };
 const ITEM_ICON = { rebar: '🔩', wire: '🧵', vest: '🦺', plate: '🛡️', gloves: '🧤', shoes: '🥾', iwf: '🏗️', drill: '💎', hammer: '⚒️', autocad: '💻', trafo: '⚡', lidar: '📡', harness: '🪢', kevlar: '⛑️', mesh: '🕸️', boots: '📻' };
 const STAT_NAME = { atk: 'ATK', mp: 'Magic', hp: 'HP', armor: 'Armor', mres: 'M.Def', ms: 'Speed', crit: 'Crit', pen: 'Pen', mpen: 'M.Pen', cdr: 'CDR', as: 'AS' };
@@ -54,6 +70,7 @@ const S = {
   lobby: null, inGame: false, heroId: 0, team: 0, myHero: null, me: null, sb: [], time: 0, score: [0, 0],
   input: { mx: 0, mz: 0, atk: false }, lastSent: { mx: 9, mz: 9, atk: null, t: 0 },
   keys: {}, joy: null, atkHeld: false, aim: null, mouse: { x: 0, y: 0 }, over: null, overShown: false,
+  skin: store.get('skin', 0),
 };
 if (!PLAYABLE.includes(S.selHero)) S.selHero = 'structural';
 const R = new Renderer($('gl'), $('overlay'));
@@ -63,7 +80,7 @@ function send(m) { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(m
 function connect() {
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
   S.ws = ws;
-  ws.onopen = () => { send({ t: 'hello', name: S.name, token: S.token, hero: S.selHero }); $('login-status').textContent = ''; };
+  ws.onopen = () => { send({ t: 'hello', name: S.name, token: S.token, hero: S.selHero, skin: S.skin }); $('login-status').textContent = ''; };
   ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } onMsg(m); };
   ws.onclose = () => {
     if (S.ws !== ws) return;
@@ -190,14 +207,20 @@ function renderHeroDetail(k) {
     <h2>${esc(H.name)}</h2><div class="role">${esc(H.role)}</div>
     <div class="sk"><div class="ic">★</div><div><b>Pasif · ${esc(H.passive.name)}</b><br><span>${esc(H.passive.desc)}</span></div></div>
     ${H.skills.map((s, i) => `<div class="sk"><div class="ic">${ic[i]}</div><div><b>${'QER'[i]} · ${esc(s.name)}</b>${lv[i]}<br><span>${esc(s.desc)} CD ${s.cd} dtk.</span></div></div>`).join('')}
+    <div class="muted" style="margin-top:10px">Skin (semua terbuka)</div>
+    <div class="skins">${SKINS.map((k) => `<button class="skin-btn t${k.id} ${S.skin === k.id ? 'on' : ''}" data-skin="${k.id}" title="${esc(k.tier)}">${esc(k.name)}</button>`).join('')}</div>
     <div class="muted" style="margin-top:10px">Build rekomendasi</div>
     <div class="build">${H.build.map((b) => `<span>${ITEM_ICON[b]} ${esc(ITEMS[b].name)}</span>`).join('')}</div>`;
+  $('hero-detail').querySelectorAll('[data-skin]').forEach((b) => {
+    b.onclick = () => { S.skin = +b.dataset.skin; store.set('skin', S.skin); send({ t: 'skin', skin: S.skin }); play('SFX_UI_Click_Hardhat'); renderHeroDetail(k); };
+  });
 }
 
 // ------------------------------------------------------------------ game start / snapshot
 function enterGame(m) {
   S.inGame = true; S.overShown = false; S.over = null;
   S.heroId = m.heroId; S.team = m.team; S.sb = m.sb || [];
+  loadClips(); for (const p of S.sb) preloadHero(p.s);
   const mine = S.sb.find((x) => x.id === m.heroId);
   S.myHero = mine ? mine.s : null;
   R.reset();

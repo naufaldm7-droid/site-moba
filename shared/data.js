@@ -1,3 +1,4 @@
+import { EXT_HEROES } from './heroes_ext.js';
 // SITE CLASH: Laydown Legends — data bersama server & client.
 // Satuan: meter, detik. Map sesuai SITE_CLASH_Schematic_Denah_Lane.png: 3v3 Blitz Site (140x70) & 5v5 Full EPC Project (160x160).
 
@@ -262,10 +263,12 @@ export const HEROES = {
     build: ['boots', 'iwf', 'drill', 'lidar', 'kevlar', 'harness'],
   },
 };
+Object.assign(HEROES, EXT_HEROES);
 export const PLAYABLE = Object.keys(HEROES);
 
-// 15 hero lain dari GDD — tampil di lobby sebagai "segera hadir".
-export const LOCKED_HEROES = [
+// semua 20 hero sudah terbuka; daftar lama disimpan sebagai referensi
+export const LOCKED_HEROES = [];
+const _OLD_LOCKED = [
   { name: 'Architect Engineer', role: 'Mage / Zoner', art: 'architect_engineer_hero_concept_board' },
   { name: 'Workshop Fabricator', role: 'Tank / Initiator', art: 'workshop_fabricator_hero_concept_sheet' },
   { name: 'Plumbing Engineer', role: 'Controller / Mage', art: 'plumbing_engineer_hero_turnaround_sheet' },

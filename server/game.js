@@ -37,6 +37,7 @@ function initStatus(u) {
   u.stunUntil = 0; u.rootUntil = 0; u.airUntil = 0; u.ccImmuneUntil = 0;
   u.invisUntil = 0; u.revealUntil = 0; u.markUntil = 0; u.shred = { n: 0, until: 0 };
   u.lastAttackAt = -99; u.lastCombatAt = -99; u.attackers = new Map();
+  u.asBuffs = []; u.silenceUntil = 0;
   u.visible = [true, true, true];
 }
 
@@ -48,6 +49,7 @@ export class Game {
     this.events = [];
     this.pending = [];
     this.reveals = [];
+    this.zones = [];
     this.score = [0, 0];
     this.over = null;
     this.waveN = 0;
@@ -93,7 +95,7 @@ export class Game {
     const idx = this.heroes.filter((o) => o.team === s.team).length;
     const ang = idx * 1.2566 + (s.team ? Math.PI : 0);
     const h = this.add({
-      kind: 'hero', hero: s.hero, H, name: s.name, team: s.team, pid: s.pid, bot: !!s.bot,
+      kind: 'hero', hero: s.hero, H, name: s.name, team: s.team, pid: s.pid, bot: !!s.bot, skin: s.skin | 0,
       x: sp.x + (idx ? Math.cos(ang) * 2.2 : 0), z: sp.z + (idx ? Math.sin(ang) * 2.2 : 0), r: 0.55, f: s.team === 0 ? Math.PI / 2 : -Math.PI / 2,
       lvl: 1, xp: 0, gold: START_GOLD, items: [], dead: false, respawnAt: 0,
       cds: [0, 0, 0], atkCd: 0, kills: 0, deaths: 0, assists: 0,
@@ -191,6 +193,8 @@ export class Game {
       for (const o of this.heroes) if (o.team !== h.team && !o.dead && d2(o, h) < 36) n++;
       armor += 7 * Math.min(3, n); mres += 7 * Math.min(3, n);
     }
+    const P = h.H.passive || {};
+    if (P.type === 'flatDef') { armor += P.v; mres += P.v; }
     let ms = b.ms + it.ms;
     let msPct = 0;
     for (const m of h.msBuffs) if (m.until > now) msPct += m.pct;
@@ -202,8 +206,8 @@ export class Game {
       atk: b.atk + b.atkGrow * L + it.atk,
       mp: b.mp + it.mp + L * 6,
       armor, mres, ms,
-      crit: Math.min(0.8, it.crit), pen: it.pen, mpen: it.mpen, cdr: Math.min(0.4, it.cdr),
-      as: b.as * (1 + it.as + L * 0.02),
+      crit: Math.min(0.85, it.crit + (h.critStackUntil > now ? 0.06 * (h.critStacks || 0) : 0)), pen: it.pen, mpen: it.mpen, cdr: Math.min(0.4, it.cdr),
+      as: b.as * (1 + it.as + L * 0.02 + h.asBuffs.reduce((a, x) => a + (x.until > now ? x.pct : 0), 0)),
       range: b.range,
     };
     return h.cur;
@@ -250,7 +254,8 @@ export class Game {
       if (src.siege || (src.kind === 'minion' && src.type === 'mastiff') || (src.kind === 'boss' && src.ally)) amt *= 2;
     }
     if (t.kind === 'struct' && now > this.map.overtime) amt *= 1 + (now - this.map.overtime) / 240; // overtime: struktur makin rapuh
-    if (src.kind === 'struct' && t.kind === 'minion') amt *= 0.5; // turret mengikis minion pelan, beri waktu push
+    if (src.kind === 'struct' && t.kind === 'minion') amt *= 0.5;
+    if (src.kind === 'minion') for (const o of this.heroes) if (o.team === src.team && !o.dead && o.H.passive && o.H.passive.type === 'minionAura' && d2(o, src) < 64) { amt *= 1.3; break; } // turret mengikis minion pelan, beri waktu push
     // shield
     let shieldMult = 1;
     if (src.kind === 'hero') {
@@ -614,6 +619,14 @@ export class Game {
     // regen dasar + HoT
     h.hp = Math.min(h.maxHp, h.hp + (2 + h.lvl * 0.4) * DT);
     for (const ho of h.hots) if (ho.until > now) h.hp = Math.min(h.maxHp, h.hp + ho.rate * DT);
+    // pasif aura hero tambahan
+    const PP = h.H.passive;
+    if (PP && PP.type === 'auraSlow') for (const e of this.heroes) if (e.team !== h.team && !e.dead && d2(e, h) < PP.r * PP.r) this.slow(e, PP.v, 0.15);
+    if (PP && PP.type === 'pulseHeal' && now >= (h.pulseNext || PP.every)) {
+      h.pulseNext = now + PP.every;
+      this.ev({ t: 'fx', k: 'gen', shape: 'buff', id: h.id, x: r1(h.x), z: r1(h.z), r: PP.r, c: '#7cff9a', text: 'SUPPLY' });
+      for (const a of this.heroes) if (a.team === h.team && !a.dead && d2(a, h) < PP.r * PP.r) this.heal(h, a, PP.v[0] + PP.v[1] * h.lvl);
+    }
     // HSE passive
     if (h.hero === 'hse') for (const a of this.heroes) if (a.team === h.team && !a.dead && d2(a, h) < 49) a.hp = Math.min(a.maxHp, a.hp + a.maxHp * 0.01 * DT);
     // copper mesh
@@ -697,8 +710,10 @@ export class Game {
     if (h.hero === 'surveyor' && dist(h, t) > 6) dmg *= 1.15;
     const extraTrue = h.aftershock ? c.atk * 0.4 : 0;
     h.aftershock = false;
+    const P = h.H.passive || {};
     const hit = (tt) => {
       this.damage(h, tt, dmg, 'phys', { basic: true, crit });
+      if (P.type) this.passiveOnHit(h, tt, P);
       if (extraTrue) this.damage(h, tt, extraTrue, 'true');
       if (h.hero === 'surveyor') tt.revealUntil = Math.max(tt.revealUntil, this.time + 2);
     };
@@ -738,6 +753,7 @@ export class Game {
     const now = this.time;
     const S = h.H.skills[slot];
     if (h.lvl < (slot === 2 ? ULT_LEVEL : slot === 1 ? S2_LEVEL : 1)) return;
+    if (h.silenceUntil > now) { this.ev({ t: 'fx', k: 'silenced', id: h.id }); return; }
     const recast = slot === 0 && h.hero === 'drafter' && h.s1RecastUntil > now;
     if (h.cds[slot] > 0) return;
     const c = h.cur, L = h.lvl;
@@ -752,6 +768,11 @@ export class Game {
     const pt = (range) => { const d = Math.min(len, range); return { px: h.x + dx * d, pz: h.z + dz * d }; };
     this.ev({ t: 'cast', id: h.id, hero: h.hero, slot });
 
+    if (h.H.gen) {
+      const res = this.castGeneric(h, slot, dx, dz, len);
+      if (res === false) return;
+      if (typeof res === 'number') cd = res;
+    }
     switch (h.hero) {
       // ---------------------------------------------------- STRUCTURAL
       case 'structural': {
@@ -903,6 +924,242 @@ export class Game {
     }
     h.cds[slot] = cd;
     if (h.has.has('hammer')) h.aftershock = true;
+  }
+
+  // ------------------------------------------------------------ skill berbasis data (15 hero tambahan)
+  specVal(h, spec) { return spec ? spec[0] + spec[1] * h.lvl + spec[2] * (spec[3] === 'mp' ? h.cur.mp : h.cur.atk) : 0; }
+
+  pickUnit(h, x, z, range) {
+    let best = null, bs = Infinity;
+    for (const e of this.ents.values()) {
+      if (e.kind === 'proj' || e.kind === 'struct' || !this.canTarget(h, e)) continue;
+      if (dist(e, h) > range + e.r) continue;
+      const sc = (e.kind === 'hero' ? 0 : 60) + (e.x - x) ** 2 + (e.z - z) ** 2;
+      if (sc < bs) { bs = sc; best = e; }
+    }
+    return best;
+  }
+
+  shove(e, fx, fz, distM, toward) {
+    if (!e || e.kind === 'struct' || e.kind === 'boss' || e.dead) return;
+    if (e.kind === 'hero' && (e.ccImmuneUntil > this.time || (e.H.passive && e.H.passive.type === 'flatDef' && e.hero === 'crane'))) return;
+    let dx = e.x - fx, dz = e.z - fz;
+    const L = Math.hypot(dx, dz) || 1;
+    dx /= L; dz /= L;
+    if (toward) { dx = -dx; dz = -dz; distM = Math.max(0, Math.min(distM, L - 1.2)); }
+    const steps = Math.ceil(distM / 0.3);
+    for (let i = 0; i < steps; i++) if (!this.tryMove(e, dx * distM / steps, dz * distM / steps)) break;
+  }
+
+  applyHit(h, e, hit, ox, oz) {
+    if (!hit || !e || e.dead || e.hp <= 0) return;
+    const now = this.time;
+    if (hit.dmg) this.damage(h, e, this.specVal(h, hit.dmg), hit.dt || 'phys', { skill: true });
+    if (e.dead || e.hp <= 0) return;
+    if (hit.slow) this.slow(e, hit.slow[0], hit.slow[1]);
+    if (hit.stun) this.cc(e, 'stun', hit.stun, h);
+    if (hit.root) this.cc(e, 'root', hit.root, h);
+    if (hit.air) this.cc(e, 'air', hit.air, h);
+    if (hit.silence && e.kind === 'hero' && !(e.ccImmuneUntil > now)) e.silenceUntil = Math.max(e.silenceUntil, now + hit.silence);
+    if (hit.reveal) e.revealUntil = Math.max(e.revealUntil, now + hit.reveal);
+    if (hit.mark) e.markUntil = Math.max(e.markUntil, now + hit.mark);
+    if (hit.strip) { e.shields = []; e.meshShield = 0; }
+    if (hit.knock) this.shove(e, ox, oz, hit.knock, false);
+    if (hit.pull) this.shove(e, h.x, h.z, 30, true);
+    if (hit.pullTo) this.shove(e, ox, oz, 30, true);
+    if (hit.dmg && h.kind === 'hero') this.onSkillHit(h, e);
+  }
+
+  onSkillHit(h, e) {
+    const P = h.H.passive || {};
+    if (P.type === 'slowOnHit') this.slow(e, P.v, 1.2);
+    if (P.type === 'loopSync') for (let i = 0; i < 3; i++) h.cds[i] = Math.max(0, h.cds[i] - P.v);
+    if (P.type === 'thirdSkillBurst' && e.kind === 'hero') {
+      h.ratioN = (h.ratioN || 0) + 1;
+      if (h.ratioN % 3 === 0) {
+        this.ev({ t: 'fx', k: 'gen', shape: 'circle', x: r1(e.x), z: r1(e.z), r: 2.5, c: '#ffd23a', text: 'GOLDEN RATIO' });
+        this.enemiesIn(h, e.x, e.z, 2.5, (o) => this.damage(h, o, 90 + 12 * h.lvl + 0.5 * h.cur.mp, 'magic'));
+      }
+    }
+  }
+
+  passiveOnHit(h, tt, P) {
+    const now = this.time, L = h.lvl;
+    switch (P.type) {
+      case 'shieldOnHit': {
+        const cur = this.shieldOf(h);
+        if (cur < P.max) this.shield(h, Math.min(P.max - cur, P.v[0] + P.v[1] * L), 4);
+        break;
+      }
+      case 'slowOnHit': this.slow(tt, P.v, 1.2); break;
+      case 'chainEvery3': {
+        h.hitN = (h.hitN || 0) + 1;
+        if (h.hitN % 3) break;
+        const pts = [[r1(tt.x), r1(tt.z)]]; let n = 0;
+        for (const e of this.ents.values()) {
+          if (n >= 2) break;
+          if (e === tt || e.kind === 'proj' || e.kind === 'struct' || !this.canTarget(h, e) || d2(e, tt) > 36) continue;
+          n++; pts.push([r1(e.x), r1(e.z)]);
+          this.damage(h, e, 60 + 8 * L + 0.3 * h.cur.mp, 'magic');
+        }
+        this.ev({ t: 'fx', k: 'chain', pts, c: '#9fd0ff' });
+        break;
+      }
+      case 'critStack':
+        h.critStacks = Math.min(5, (h.critStackUntil > now ? h.critStacks || 0 : 0) + 1); h.critStackUntil = now + 4; break;
+      case 'pctTrue': if (tt.kind !== 'struct') this.damage(h, tt, Math.min(tt.maxHp * P.v, tt.kind === 'boss' ? 150 : 1e9), 'true'); break;
+      case 'revealOnHit': tt.revealUntil = Math.max(tt.revealUntil, now + 3); break;
+      case 'markOnHit': tt.markUntil = Math.max(tt.markUntil, now + P.v); break;
+      case 'thermal':
+        h.thermalHot = !h.thermalHot;
+        if (h.thermalHot) for (let i = 1; i <= 3; i++) this.at(i * 0.6, () => this.damage(h, tt, 20 + 4 * L + 0.1 * h.cur.mp, 'magic'));
+        else this.slow(tt, 0.2, 1.2);
+        break;
+    }
+  }
+
+  buffAllies(h, A, cx, cz) {
+    const now = this.time;
+    let list = this.heroes.filter((a) => a.team === h.team && !a.dead && (a.x - cx) ** 2 + (a.z - cz) ** 2 <= A.r * A.r);
+    if (A.one) {
+      list.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp);
+      list = list.length ? [list[0]] : [h];
+    }
+    for (const a of list) {
+      if (A.shield) this.shield(a, this.specVal(h, A.shield), 4);
+      if (A.heal) this.heal(h, a, this.specVal(h, A.heal));
+      if (A.ms) a.msBuffs.push({ pct: A.ms[0], until: now + A.ms[1] });
+      if (A.as) a.asBuffs.push({ pct: A.as[0], until: now + A.as[1] });
+      if (A.cdr) for (let i = 0; i < 3; i++) a.cds[i] = Math.max(0, a.cds[i] - A.cdr);
+      if (A.cleanse) { a.stunUntil = 0; a.rootUntil = 0; a.airUntil = 0; a.slows = []; a.silenceUntil = 0; }
+      this.ev({ t: 'fx', k: 'gen', shape: 'buff', id: a.id, x: r1(a.x), z: r1(a.z), r: 1.6, c: h.H.skills ? (h.H.accent || '#7cff9a') : '#7cff9a' });
+    }
+  }
+
+  castGeneric(h, slot, dx, dz, len) {
+    const S = h.H.skills[slot], A = S.area || {}, now = this.time;
+    const range = S.range || 0;
+    const d = Math.min(len || range, range);
+    const px = h.x + dx * d, pz = h.z + dz * d;
+    const F = S.fx || {};
+    const col = F.c || h.H.accent || '#ffffff';
+    const base = { ...F, t: 'fx', k: 'gen', id: h.id, c: col, text: F.text || '', hero: h.hero, slot, flags: Object.keys(F).filter((k) => F[k] === true || typeof F[k] === 'string' && k !== 'c' && k !== 'text').join(',') };
+    const ev = (shape, extra) => this.ev({ ...base, shape, x: r1(h.x), z: r1(h.z), dx: Math.round(dx * 100) / 100, dz: Math.round(dz * 100) / 100, ...extra });
+    let hitHero = false;
+    const hitE = (e, ox, oz) => { if (e.kind === 'hero') hitHero = true; this.applyHit(h, e, S.hit, ox, oz); };
+    let cdOverride;
+    switch (A.shape) {
+      case 'cone': {
+        ev('cone', { r: A.r, ang: A.ang });
+        const ca = Math.cos(A.ang);
+        this.enemiesIn(h, h.x, h.z, A.r, (e) => {
+          const ex = e.x - h.x, ez = e.z - h.z, el = Math.hypot(ex, ez) || 1;
+          if ((ex * dx + ez * dz) / el >= ca) hitE(e, h.x, h.z);
+        });
+        break;
+      }
+      case 'line': {
+        const x0 = h.x, z0 = h.z, bx = h.x + dx * A.len, bz = h.z + dz * A.len;
+        const go = () => {
+          ev('line', { x: r1(x0), z: r1(z0), x2: r1(bx), z2: r1(bz), w: A.w });
+          this.enemiesInLine(h, x0, z0, bx, bz, A.w / 2, (e) => hitE(e, x0, z0));
+        };
+        if (A.delay) { ev('line-warn', { x: r1(x0), z: r1(z0), x2: r1(bx), z2: r1(bz), w: A.w, delay: A.delay }); this.at(A.delay, go); } else go();
+        break;
+      }
+      case 'circle': {
+        const cx = A.at === 'point' ? px : h.x, cz = A.at === 'point' ? pz : h.z;
+        const go = () => {
+          ev('circle', { x: r1(cx), z: r1(cz), r: A.r });
+          if (S.hit) this.enemiesIn(h, cx, cz, A.r, (e) => hitE(e, cx, cz));
+          if (S.zone) {
+            this.zones.push({ team: h.team, src: h, x: cx, z: cz, r: S.zone.r, until: this.time + S.zone.dur, tick: S.zone.tick, next: this.time + 0.05, hit: S.zone.hit });
+            ev('zone', { x: r1(cx), z: r1(cz), r: S.zone.r, dur: S.zone.dur });
+          }
+          if (S.turret) {
+            this.zones.push({ team: h.team, src: h, x: cx, z: cz, r: S.turret.range, until: this.time + S.turret.dur, tick: S.turret.every, next: this.time + 0.4, turret: S.turret, col });
+            ev('turret', { x: r1(cx), z: r1(cz), dur: S.turret.dur });
+          }
+          if (S.allies && S.allies.at === 'point') this.buffAllies(h, S.allies, cx, cz);
+        };
+        if (A.delay) { ev('circle-warn', { x: r1(cx), z: r1(cz), r: A.r, delay: A.delay }); this.at(A.delay, go); } else go();
+        break;
+      }
+      case 'proj': {
+        const n = A.fan || 1;
+        const base0 = Math.atan2(dx, dz);
+        ev('proj', {});
+        for (let i = 0; i < n; i++) {
+          const a = base0 + (i - (n - 1) / 2) * 0.22;
+          this.proj(h, { dir: [Math.sin(a), Math.cos(a)], range, speed: A.speed || 26, style: 'g' + col, width: A.w || 0.6, pierce: !!A.pierce, onHit: (e) => hitE(e, h.x, h.z) });
+        }
+        break;
+      }
+      case 'dash': {
+        const hit = new Set();
+        const x0 = h.x, z0 = h.z;
+        this.dash(h, dx, dz, A.len, () => this.enemiesIn(h, h.x, h.z, A.w || 1.4, (e) => { if (!hit.has(e.id)) { hit.add(e.id); hitE(e, x0, z0); } }));
+        if (A.endR) { ev('circle', { x: r1(h.x), z: r1(h.z), r: A.endR }); this.enemiesIn(h, h.x, h.z, A.endR, (e) => { if (!hit.has(e.id)) { hit.add(e.id); hitE(e, h.x, h.z); } }); }
+        ev('dash', { x: r1(x0), z: r1(z0), x2: r1(h.x), z2: r1(h.z) });
+        if (A.resetOnHero && hitHero) cdOverride = 2.5;
+        break;
+      }
+      case 'unit': {
+        const t = this.pickUnit(h, px, pz, range + 1);
+        if (!t) return false;
+        if (A.dashTo) {
+          const L = dist(h, t);
+          if (L > 1.6) this.dash(h, (t.x - h.x) / L, (t.z - h.z) / L, L - 1.4);
+        }
+        ev('unit', { x: r1(h.x), z: r1(h.z), x2: r1(t.x), z2: r1(t.z), tg: t.id });
+        hitE(t, h.x, h.z);
+        break;
+      }
+      case 'chain': {
+        const t = this.pickUnit(h, px, pz, range + 1);
+        if (!t) return false;
+        const chain = [t];
+        let last = t;
+        for (let i = 1; i < (A.n || 3); i++) {
+          let nb = null, bd = (A.r || 6) ** 2;
+          for (const e of this.ents.values()) {
+            if (e.kind === 'proj' || e.kind === 'struct' || chain.includes(e) || !this.canTarget(h, e)) continue;
+            const dd = d2(e, last); if (dd < bd) { bd = dd; nb = e; }
+          }
+          if (!nb) break;
+          chain.push(nb); last = nb;
+        }
+        this.ev({ t: 'fx', k: 'chain', pts: [[r1(h.x), r1(h.z)], ...chain.map((e) => [r1(e.x), r1(e.z)])], c: col });
+        chain.forEach((e, i) => this.at(i * 0.12, () => hitE(e, h.x, h.z)));
+        break;
+      }
+      default: ev('self', { r: S.aoe || 3 });
+    }
+    if (S.allies && S.allies.at !== 'point') this.buffAllies(h, S.allies, h.x, h.z);
+    else if (S.allies && A.shape === 'self') this.buffAllies(h, S.allies, px, pz);
+    return cdOverride;
+  }
+
+  tickZones() {
+    const now = this.time;
+    if (!this.zones.length) return;
+    for (const z of this.zones) {
+      if (now < z.next) continue;
+      z.next += z.tick;
+      if (z.turret) {
+        let best = null, bd = z.r * z.r;
+        for (const e of this.ents.values()) {
+          if (e.kind === 'proj' || e.kind === 'struct' || e.team === z.team || e.team === 2 || !this.canTarget(z.src, e)) continue;
+          const dd = (e.x - z.x) ** 2 + (e.z - z.z) ** 2;
+          if (dd < bd) { bd = dd; best = e; }
+        }
+        if (best) {
+          const dmg = this.specVal(z.src, z.turret.dmg);
+          this.proj(z.src, { tgt: best.id, x: z.x, z: z.z, speed: 30, style: 'g' + z.col, onHit: (tt) => this.damage(z.src, tt, dmg, 'phys') });
+        }
+      } else this.enemiesIn(z.src, z.x, z.z, z.r, (e) => this.applyHit(z.src, e, z.hit, z.x, z.z));
+    }
+    this.zones = this.zones.filter((z) => z.until > now);
   }
 
   // ------------------------------------------------------------ minion / boss AI
@@ -1152,6 +1409,7 @@ export class Game {
     this.flip = !this.flip;
     const hs = this.flip ? this.heroes : [...this.heroes].reverse();
     for (const h of hs) this.tickHero(h);
+    this.tickZones();
     const list = [...this.ents.values()];
     if (this.flip) list.reverse();
     for (const e of list) {
@@ -1168,6 +1426,7 @@ export class Game {
       if (e.msBuffs.length) e.msBuffs = e.msBuffs.filter((s) => s.until > now);
       if (e.shields.length) e.shields = e.shields.filter((s) => s.until > now && s.amt > 0);
       if (e.hots.length) e.hots = e.hots.filter((s) => s.until > now);
+      if (e.asBuffs.length) e.asBuffs = e.asBuffs.filter((s) => s.until > now);
     }
     // collision
     const movers = list.filter((e) => (e.kind === 'hero' || e.kind === 'minion') && !e.dead);
@@ -1205,7 +1464,7 @@ export class Game {
       if (e.markUntil > now) fl |= 4096;
       if (e.kind === 'struct' && e.armed) fl |= 8192;
       const o = { i: e.id, k: e.kind[0], tm: e.team, x: r1(e.x), z: r1(e.z), f: r1(e.f || 0), hp: Math.round(e.hp), mh: e.maxHp, fl };
-      if (e.kind === 'hero') { o.s = e.hero; o.n = e.name; o.lv = e.lvl; const sh = this.shieldOf(e); if (sh > 0) o.sh = Math.round(sh); }
+      if (e.kind === 'hero') { o.s = e.hero; o.n = e.name; o.lv = e.lvl; if (e.skin) o.sk = e.skin; const sh = this.shieldOf(e); if (sh > 0) o.sh = Math.round(sh); }
       else o.s = e.type;
       if (e.ally) o.al = 1;
       ents.push(o);
@@ -1225,6 +1484,6 @@ export class Game {
   }
 
   scoreboard() {
-    return this.heroes.map((h) => ({ id: h.id, n: h.name, s: h.hero, tm: h.team, lv: h.lvl, k: h.kills, d: h.deaths, a: h.assists, g: Math.round(h.goldEarned), bot: h.bot ? 1 : 0, items: h.items }));
+    return this.heroes.map((h) => ({ id: h.id, n: h.name, s: h.hero, sk: h.skin, tm: h.team, lv: h.lvl, k: h.kills, d: h.deaths, a: h.assists, g: Math.round(h.goldEarned), bot: h.bot ? 1 : 0, items: h.items }));
   }
 }

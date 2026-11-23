@@ -16,6 +16,14 @@ pemain masuk lewat **browser** di PC atau HP yang terhubung ke WiFi / hotspot ya
 
 Manual: `npm install` lalu `npm start`. Ganti port: `set PORT=8080 && npm start`.
 
+## Main online bersama teman (internet)
+
+1. Klik dua kali **`START_ONLINE.bat`**. Server jalan di laptop ini, lalu Cloudflare Tunnel (gratis, resmi) membuat link publik seperti
+   `https://kata-kata-acak.trycloudflare.com`.
+2. Link tampil di jendela server **dan di lobby** (tombol *Salin*). Kirim ke teman. Mereka cukup buka link itu di browser HP/PC, tanpa install.
+3. Link berganti setiap server dinyalakan ulang. Laptop harus tetap menyala & terhubung internet selama main.
+4. Mode 5v5 penuh = 10 pemain; tiap pemain butuh ±50 KB/s. Upload internet laptop ±5 Mbps sudah cukup.
+
 ## Kontrol
 
 | | PC | HP (landscape) |
@@ -68,7 +76,18 @@ tools/make_thumbs.py  bikin thumbnail JPG dari concept art PNG
 
 Balance di-tuning lewat `shared/data.js`; cek hasilnya dengan `node tools/simtest.js 20 full`.
 
+## Karakter 3D, animasi & skin (v0.3)
+
+- **20 hero terbuka semua**, masing-masing model 3D ber-rig (Blender) dengan seragam, helm, rompi reflektif, hijab, visor, dan alat khas sesuai concept art.
+- Base tubuh & 22 animasi dari Quaternius *Universal Base Characters* + *Universal Animation Library* (lisensi **CC0**). Sumber zip tidak di-commit (`_vendor_assets/`).
+- Animasi: idle, lari/sprint, serangan (pedang/pukulan/tembak/sihir), cast skill, kena stun, recall, mati, menari saat menang.
+- **4 tingkat skin** (semua terbuka): Default · Elite *Night-Shift Overtime* (neon warna role) · Epic *Client Gala* (emas) · Legend *Master EPC Exoskeleton* (logam + inti cyan + aura).
+- VFX: bloom, partikel cahaya, jejak proyektil, gempa layar, kontainer/kandang baja jatuh, konvoi truk molen, turret SCADA, zona es/lumpur/minyak, pusaran turbin.
+- Kualitas grafis otomatis (HP: sedang). Ubah lewat konsol: `localStorage.sc_quality = 'low' | 'med' | 'high'`.
+- Membangun ulang model: buka Blender (add-on MCP aktif) lalu jalankan `tools/blender/build_heroes.py` → `build_all()` dan `build_anims()`. Spesifikasi tampilan tiap hero ada di `tools/blender/hero_specs.py`.
+- Uji balance: `node tools/herostats.js 40` (persentase menang per hero dari match bot).
+
 ## Rencana berikutnya
 
-15 hero sisanya, fog of war untuk 5v5, camp jungle (Genset/Comp buff), skin tiers, draft pick & ban,
-model 3D Blender (.glb) menggantikan model prosedural.
+Fog of war untuk 5v5, camp jungle (Genset/Comp buff), draft pick & ban, model 3D minion & boss (kucing/anjing) dari Blender,
+animasi intro/showcase per hero, dan versi Unity (APK) bila diperlukan.

@@ -1,6 +1,6 @@
 {
   "name": "site-clash-laydown-legends",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "SITE CLASH: Laydown Legends — MOBA 3D bertema EPC/konstruksi. Server Node di laptop, main lewat browser (PC & HP) di jaringan lokal.",
   "type": "module",
   "private": true,

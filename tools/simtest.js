@@ -9,7 +9,7 @@ const mode = process.argv[3] || 'blitz';
 const size = mode === 'full' ? 5 : 3;
 const slots = [];
 for (const team of [0, 1]) for (let i = 0; i < size; i++) {
-  const hero = process.env.MIRROR || size === 5 ? PLAYABLE[i % 5] : PLAYABLE[(i * 2 + team) % 5];
+  const hero = process.env.MIRROR ? PLAYABLE[i % PLAYABLE.length] : PLAYABLE[(i * 4 + team * 2 + (+process.env.SEED || 0)) % PLAYABLE.length];
   slots.push({ pid: null, name: `B${team}${i}`, team, hero, bot: true });
 }
 const g = new Game(slots, { mode });

@@ -102,6 +102,10 @@ const MAPKEY = {
   SFX_Env_Bush_Rustle: R.rustle,
   SFX_Struct_Collapse: R.boom,
   SFX_Hit: R.hit,
+  SFX_GEN_S0: (o, t) => { R.whoosh(o, t, true); R.zap(o, t + 0.05); },
+  SFX_GEN_S1: (o, t) => { R.thud(o, t, 1.1); R.metal(o, t + 0.04, 1200); },
+  SFX_GEN_Ult: (o, t) => { R.rankup(o, t); R.boom(o, t + 0.2); },
+  SFX_GEN_Atk: (o, t) => R.hit(o, t),
   // 01 Structural
   SFX_H01_Atk_ScaleHit: (o, t) => R.metal(o, t, 700),
   SFX_H01_S1_BeamSwing: (o, t) => { R.whoosh(o, t, false); R.metal(o, t + 0.1, 520); },
@@ -136,7 +140,8 @@ const HERO_SFX = {
   qs: ['SFX_H08_S1_BOQVolley', 'SFX_H08_S2_AuditStamp', 'SFX_H08_Ult_VaultDrop', 'SFX_H08_Atk_PaperSlice'],
   surveyor: ['SFX_H12_S1_DroneScan', 'SFX_H12_S2_TheodoliteBeam', 'SFX_H12_Ult_LiDARStrike', 'SFX_H12_Atk_LaserPing'],
 };
-export const heroSfx = (hero, slot) => HERO_SFX[hero]?.[slot];
+const GEN_SFX = ['SFX_GEN_S0', 'SFX_GEN_S1', 'SFX_GEN_Ult', 'SFX_GEN_Atk'];
+export const heroSfx = (hero, slot) => HERO_SFX[hero]?.[slot] || GEN_SFX[slot];
 
 // vol: 0..1 (sudah termasuk atenuasi jarak dari pemanggil)
 export function play(key, vol = 1, minGap = 0.045) {

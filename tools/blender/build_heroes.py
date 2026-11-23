@@ -85,7 +85,8 @@ def mk_mat(name, col, rough=0.75, metal=0.0, emis=None, strength=2.0, double=Tru
 
 def plaid_image(name, base, a, b, size=128):
     img = bpy.data.images.new(name, size, size)
-    B, A, C = lin(base), lin(a), lin(b)
+    srgb = lambda h: tuple(int(h.lstrip('#')[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    B, A, C = srgb(base), srgb(a), srgb(b)  # gambar baru = ruang warna sRGB
     px = []
     for y in range(size):
         for x in range(size):
@@ -574,7 +575,7 @@ def build_hero(hero, preview=False, export=True):
         for o in bpy.data.objects: o.select_set(o.type in ('MESH', 'ARMATURE'))
         with bpy.context.temp_override(**ctx()), contextlib.redirect_stdout(QUIET), contextlib.redirect_stderr(QUIET):
             bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True, export_animations=False,
-                                      export_image_format='WEBP', export_apply=False, export_yup=True)
+                                      export_image_format='JPEG', export_apply=False, export_yup=True)
         info['kb'] = round(os.path.getsize(path) / 1024)
     return info
 

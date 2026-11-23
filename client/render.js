@@ -1,6 +1,11 @@
 // SITE CLASH — renderer Three.js: Abandoned Container Laydown Yard (golden hour), model prosedural ringan untuk HP.
 import * as THREE from 'three';
 import { MAPS, HEROES, STRUCT, SNAP_HZ, laneProject } from '/shared/data.js';
+import { makeHero, clipFor, ONE_SHOT, applySkin, roleColor } from './models.js';
+import { EffectComposer } from '/vendor/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from '/vendor/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from '/vendor/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from '/vendor/jsm/postprocessing/OutputPass.js';
 
 export const TEAM_HEX = ['#3d8bff', '#ff4040'];
 const TEAM_COL = [0x3d8bff, 0xff4040];
@@ -192,7 +197,62 @@ function strut(m, a, b, r) {
   o.quaternion.setFromUnitVectors(UP, d.normalize());
   return o;
 }
-const basicAdd = (color, opacity = 1) => new THREE.MeshBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+const basicAdd = (color, opacity = 1) => { const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }); m.color.multiplyScalar(2.2); return m; };
+
+// tekstur titik cahaya lembut untuk partikel glow
+function glowSprite() {
+  return canvasTex(64, 64, (g, w, h) => {
+    const grd = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+    grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.25, 'rgba(255,255,255,0.85)'); grd.addColorStop(0.6, 'rgba(255,255,255,0.18)'); grd.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grd; g.fillRect(0, 0, w, h);
+  });
+}
+
+class GlowPoints {
+  constructor(scene, n = 1400) {
+    this.n = n; this.next = 0;
+    this.pos = new Float32Array(n * 3); this.col = new Float32Array(n * 3); this.size = new Float32Array(n); this.alpha = new Float32Array(n);
+    this.p = Array.from({ length: n }, () => ({ life: 0 }));
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
+    geo.setAttribute('color', new THREE.BufferAttribute(this.col, 3).setUsage(THREE.DynamicDrawUsage));
+    geo.setAttribute('size', new THREE.BufferAttribute(this.size, 1).setUsage(THREE.DynamicDrawUsage));
+    geo.setAttribute('alpha', new THREE.BufferAttribute(this.alpha, 1).setUsage(THREE.DynamicDrawUsage));
+    this.geo = geo;
+    this.mat = new THREE.ShaderMaterial({
+      uniforms: { map: { value: glowSprite() }, scale: { value: 600 } },
+      vertexShader: `attribute float size; attribute float alpha; attribute vec3 color; varying vec3 vC; varying float vA; uniform float scale;
+        void main(){ vC = color; vA = alpha; vec4 mv = modelViewMatrix * vec4(position,1.0); gl_PointSize = size * scale / -mv.z; gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `uniform sampler2D map; varying vec3 vC; varying float vA;
+        void main(){ vec4 t = texture2D(map, gl_PointCoord); gl_FragColor = vec4(vC * 2.4, t.a * vA); }`,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    this.points = new THREE.Points(geo, this.mat);
+    this.points.frustumCulled = false;
+    scene.add(this.points);
+  }
+  emit(x, y, z, vx, vy, vz, life, size, color, grav = 0, drag = 0.6) {
+    const i = this.next; this.next = (this.next + 1) % this.n;
+    const p = this.p[i];
+    Object.assign(p, { x, y, z, vx, vy, vz, life, max: life, size, grav, drag });
+    tmpC.set(color); this.col[i * 3] = tmpC.r; this.col[i * 3 + 1] = tmpC.g; this.col[i * 3 + 2] = tmpC.b;
+  }
+  update(dt) {
+    for (let i = 0; i < this.n; i++) {
+      const p = this.p[i];
+      if (p.life <= 0) { if (this.alpha[i]) this.alpha[i] = 0; continue; }
+      p.life -= dt;
+      const k = Math.max(0, p.life / p.max);
+      const d = Math.max(0, 1 - p.drag * dt);
+      p.vx *= d; p.vz *= d; p.vy = p.vy * d - p.grav * dt;
+      p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+      this.pos[i * 3] = p.x; this.pos[i * 3 + 1] = p.y; this.pos[i * 3 + 2] = p.z;
+      this.size[i] = p.size * (0.4 + 0.6 * k); this.alpha[i] = k < 0.7 ? k / 0.7 : 1;
+    }
+    for (const a of ['position', 'color', 'size', 'alpha']) this.geo.attributes[a].needsUpdate = true;
+  }
+}
+const PROJ_COL = { water: '#6fd0ff', signal: '#6ff0ff', bark: '#ffe27a', cart: '#ffb060', boq: '#ffffff', 'atk-qs': '#fff3c0', 'atk-hse': '#7cff9a', 'atk-surveyor': '#5dff6a' };
 const basic = (color, opacity = 1) => new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide });
 
 // ------------------------------------------------------------------ model builders
@@ -459,7 +519,12 @@ function buildProj(style) {
     case 'boq': case 'atk-qs': g.add(box(mat(0xffffff, { emissive: 0xffffff, ei: 0.4 }), 0.4, 0.02, 0.5)); break;
     case 'atk-hse': g.add(mesh(GEO.sph, basicAdd(0x7cff9a, 0.95), 0.18, 0.18, 0.18)); break;
     case 'atk-surveyor': { const o = mesh(GEO.cyl, basicAdd(0x5dff6a, 0.95), 0.06, 1.2, 0.06); o.rotation.x = Math.PI / 2; g.add(o); break; }
-    default: g.add(mesh(GEO.sph, basicAdd(0xffffff, 0.9), 0.15, 0.15, 0.15));
+    default:
+      if (style.startsWith('g#')) {
+        const c = new THREE.Color(style.slice(1)).getHex();
+        g.add(mesh(GEO.sph, basicAdd(c, 0.95), 0.28, 0.28, 0.28));
+        g.add(mesh(GEO.sph, basicAdd(0xffffff, 0.9), 0.12, 0.12, 0.12));
+      } else g.add(mesh(GEO.sph, basicAdd(0xffffff, 0.9), 0.15, 0.15, 0.15));
   }
   g.position.y = style === 'water' || style === 'signal' ? 6 : 1.2;
   g.userData.y0 = g.position.y;
@@ -501,6 +566,10 @@ export class Renderer {
     this.map = null; this.world = null;
     this.setMap('blitz');
     this.initParticles();
+    this.glow = new GlowPoints(this.scene);
+    let q = 'high';
+    try { q = localStorage.getItem('sc_quality') || (mobile ? 'med' : 'high'); } catch { /* storage diblokir */ }
+    this.setQuality(q);
     this.raycaster = new THREE.Raycaster();
     this.groundPlane = new THREE.Plane(UP, 0);
     this.indicator = this.buildIndicator();
@@ -508,9 +577,30 @@ export class Renderer {
     addEventListener('resize', () => this.resize());
   }
 
+  setQuality(q) {
+    this.quality = q;
+    const mobile = matchMedia('(pointer: coarse)').matches;
+    this.gl.setPixelRatio(Math.min(window.devicePixelRatio || 1, q === 'high' ? 2 : q === 'med' ? 1.25 : 1));
+    if (q === 'low') { this.composer = null; }
+    else {
+      this.composer = new EffectComposer(this.gl);
+      this.composer.addPass(new RenderPass(this.scene, this.camera));
+      this.bloomPass = new UnrealBloomPass(new THREE.Vector2(256, 256), q === 'high' ? 0.7 : 0.6, 0.5, 0.92);
+      this.composer.addPass(this.bloomPass);
+      this.composer.addPass(new OutputPass());
+    }
+    try { localStorage.setItem('sc_quality', q); } catch { /* abaikan */ }
+    void mobile;
+    if (this.W) this.resize();
+  }
+
   resize() {
     const w = this.canvas.clientWidth || innerWidth, h = this.canvas.clientHeight || innerHeight;
     this.gl.setSize(w, h, false);
+    if (this.composer) {
+      this.composer.setPixelRatio(this.gl.getPixelRatio() * (this.quality === 'high' ? 1 : 0.6));
+      this.composer.setSize(w, h);
+    }
     this.camera.aspect = w / h;
     // layar potret: mundurkan kamera supaya lane tetap terlihat
     this.portrait = h > w;
@@ -706,7 +796,9 @@ export class Renderer {
     this.pNext = 0;
     this.scene.add(this.pMesh);
   }
-  burst(x, y, z, n, color, { speed = 4, up = 4, life = 0.7, size = 0.12, grav = 9, spread = 1 } = {}) {
+  burst(x, y, z, n, color, opts = {}) {
+    const { speed = 4, up = 4, life = 0.7, size = 0.12, grav = 9, spread = 1 } = opts;
+    if (this.glow && !opts.noGlow) this.sparks(x, y, z, Math.ceil(n * 0.6), color, { speed: speed * 0.9, up, life: life * 0.9, size: Math.max(0.35, size * 4), grav: grav * 0.4, spread });
     for (let i = 0; i < n; i++) {
       const p = this.p[this.pNext]; const idx = this.pNext;
       this.pNext = (this.pNext + 1) % this.pN;
@@ -718,6 +810,15 @@ export class Renderer {
     }
     this.pMesh.instanceColor.needsUpdate = true;
   }
+  sparks(x, y, z, n, color, { speed = 4, up = 3, life = 0.6, size = 0.6, grav = 4, spread = 0.6 } = {}) {
+    const cols = Array.isArray(color) ? color : [color];
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, s = speed * (0.3 + Math.random() * 0.7);
+      this.glow.emit(x + (Math.random() - 0.5) * spread, y, z + (Math.random() - 0.5) * spread, Math.cos(a) * s, up * (0.3 + Math.random()), Math.sin(a) * s,
+        life * (0.6 + Math.random() * 0.6), size * (0.6 + Math.random() * 0.8), cols[i % cols.length], grav);
+    }
+  }
+
   updateParticles(dt) {
     for (let i = 0; i < this.pN; i++) {
       const p = this.p[i];
@@ -840,6 +941,7 @@ export class Renderer {
     this.scene.add(obj);
     const r = { id: o.i, k: o.k, s: o.s, tm: o.tm, obj, px: o.x, pz: o.z, f: o.f || 0, fromX: o.x, fromZ: o.z, toX: o.x, toZ: o.z, fromF: o.f || 0, toF: o.f || 0, t0: this.time, d: o, atkT: -9, castT: -9, phase: Math.random() * 6, speed: 0, alpha: 1 };
     if (o.k !== 'p') this.makeLabel(r);
+    if (o.k === 'h') this.attachModel(r);
     if (o.k === 's') { r.armed = !!(o.fl & 8192); if (o.s === 'lightning' && r.armed) obj.userData.spear.position.y += 1.2; }
     return r;
   }
@@ -865,6 +967,79 @@ export class Renderer {
     if (r.k === 'h' && r.obj.userData.ring) r.obj.userData.ring.material.color.setHex(own ? 0xffd23a : TEAM_COL[r.tm]);
   }
 
+  async attachModel(r) {
+    const m = await makeHero(r.s);
+    if (!m || !this.ents.has(r.id) || r.anim) return;
+    const U = r.obj.userData;
+    U.body.visible = false;
+    if (U.drone) U.drone.visible = false;
+    m.root.scale.setScalar(1.5 / 1.35); // grup hero sudah diskalakan 1.35; model 1,81 m -> ~2,7 m agar terbaca di HP
+    const sk = r.d.sk || 0;
+    applySkin(m, r.s, HEROES[r.s], sk);
+    r.skin = sk;
+    r.skinCol = sk === 2 ? '#ffd060' : sk === 3 ? '#3fe0ff' : roleColor(r.s, HEROES[r.s]);
+    if (sk >= 2) {
+      const aura = new THREE.Mesh(GEO.ring, basicAdd(new THREE.Color(r.skinCol).getHex(), 0.55));
+      aura.rotation.x = -Math.PI / 2; aura.position.y = 0.05; aura.scale.setScalar(sk === 3 ? 1.05 : 0.95); aura.material.color.multiplyScalar(0.5);
+      r.obj.add(aura); U.skinAura = aura;
+    }
+    r.obj.add(m.root);
+    for (const mt of m.mats) { mt.userData.t = mt.transparent; U.mats.push(mt); }
+    r.alpha = 1;
+    r.anim = { ...m, cur: null, curName: '', oneShotT: 0, alt: false, lastAtk: -9, lastCast: -9 };
+    if (this.onModelReady) this.onModelReady(r);
+  }
+
+  playClip(r, name, { fade = 0.14, speed = 1, restart = false } = {}) {
+    const A = r.anim;
+    const act = A.actions[name] || A.actions.Idle_Loop;
+    if (!act) return;
+    act.timeScale = speed;
+    if (A.cur === act && !restart) return;
+    if (ONE_SHOT.has(name)) { act.setLoop(THREE.LoopOnce, 1); act.clampWhenFinished = true; }
+    else act.setLoop(THREE.LoopRepeat, Infinity);
+    act.reset().setEffectiveWeight(1).fadeIn(fade).play();
+    if (A.cur && A.cur !== act) A.cur.fadeOut(fade);
+    A.cur = act; A.curName = name;
+  }
+
+  animateModel(r, dt, fl) {
+    const now = this.time, A = r.anim;
+    const dead = fl & 64;
+    let state, slot = 0, speed = 1, restart = false;
+    if (this.victoryTeam !== undefined && r.tm === this.victoryTeam && !dead) state = 'victory';
+    else if (dead) state = 'death';
+    else if (fl & 3) state = 'stun';
+    else if (now - r.castT < 0.55) { state = 'cast'; slot = r.castSlot || 0; if (A.lastCast !== r.castT) { A.lastCast = r.castT; restart = true; } speed = 1.5; }
+    else if (now - r.atkT < 0.5) { state = 'attack'; if (A.lastAtk !== r.atkT) { A.lastAtk = r.atkT; A.alt = !A.alt; restart = true; } speed = 1.7; }
+    else if (r.speed > 0.6) { state = r.speed > 8.5 ? 'sprint' : 'run'; speed = Math.min(1.7, Math.max(0.75, r.speed / 5.4)); }
+    else if (fl & 2048) state = 'recall';
+    else state = 'idle';
+    const name = clipFor(r.s, state, slot, A.alt);
+    this.playClip(r, name, { speed, restart, fade: state === 'death' ? 0.08 : 0.14 });
+    A.mixer.update(dt);
+    // efek skin: kilau emas (Epic), inti energi & aura (Legend), jejak neon saat lari (Elite)
+    if (r.skin && !dead) {
+      const U = r.obj.userData;
+      if (U.skinAura) { U.skinAura.rotation.z = now * 1.2; U.skinAura.material.opacity = 0.35 + Math.sin(now * 4) * 0.15; }
+      const rate = r.skin === 3 ? 10 : r.skin === 2 ? 6 : r.speed > 0.6 ? 8 : 0;
+      if (Math.random() < dt * rate) this.glow.emit(r.px + rand(-0.5, 0.5), r.skin === 1 ? 0.3 : rand(0.4, 2.6), r.pz + rand(-0.5, 0.5), 0, r.skin === 1 ? 0.2 : 1.2, 0, 0.7, r.skin === 3 ? 0.7 : 0.5, r.skinCol, -0.4);
+    }
+    // knock-up: angkat seluruh model
+    A.root.position.y = (fl & 2) ? 0.7 + Math.sin(now * 8) * 0.12 : 0;
+    // kilatan merah saat kena damage besar
+    const ft = now - (r.flashT ?? -9);
+    const flash = ft < 0.12 ? 1 - ft / 0.12 : 0;
+    if (flash > 0 || A.flashing) {
+      for (const m of A.mats) {
+        if (!m.emissive || !m.userData.baseEmissive) continue;
+        m.emissive.copy(m.userData.baseEmissive).lerp(new THREE.Color(1, 0.25, 0.15), flash);
+        m.emissiveIntensity = Math.max(m.userData.baseEI || 0, flash * 1.5);
+      }
+      A.flashing = flash > 0;
+    }
+  }
+
   removeEnt(r) {
     this.scene.remove(r.obj);
     if (r.k === 'h') r.obj.userData.mats.forEach((m) => m.dispose());
@@ -885,6 +1060,7 @@ export class Renderer {
     for (const f of this.floats) f.el.remove();
     this.floats = [];
     this.pred = null;
+    this.victoryTeam = undefined;
   }
 
   applySnapshot(snap) {
@@ -939,7 +1115,7 @@ export class Renderer {
         if (r.k === 'm' && r.s === 'cat') { const t = E(e.tg); if (t) this.burst(t.px, 0.6, t.pz, 4, ['#ffb03a', '#ff6a1a'], { speed: 2.5, up: 2, life: 0.25, size: 0.07 }); }
         break;
       }
-      case 'cast': { const r = E(e.id); if (r) r.castT = now; break; }
+      case 'cast': { const r = E(e.id); if (r) { r.castT = now; r.castSlot = e.slot; } break; }
       case 'tfire': {
         const r = E(e.id), t = E(e.tg);
         if (r) { r.fireT = now; if (t) r.aimF = Math.atan2(t.px - r.px, t.pz - r.pz); }
@@ -955,6 +1131,7 @@ export class Renderer {
       }
       case 'dmg': {
         const r = E(e.id); if (!r) break;
+        if (r.k === 'h' && e.v > 25) r.flashT = now;
         const mine = e.s === this.myId || e.id === this.myId;
         if (!mine && r.k !== 'h') break;
         const cls = e.c ? 'crit' : e.k === 'magic' ? 'magic' : e.k === 'true' ? 'true' : (e.id === this.myId ? 'hurt' : '');
@@ -973,6 +1150,7 @@ export class Renderer {
         break;
       }
       case 'fx': this.skillFx(e); break;
+      case 'over': this.victoryTeam = e.winner; break;
     }
   }
 
@@ -1077,8 +1255,129 @@ export class Renderer {
       case 'howl': this.ringFx(e.x, e.z, e.r, 0xff3a1a, 0.7); this.ringFx(e.x, e.z, e.r * 0.6, 0xff8a1a, 0.6); this.shake = 0.3; break;
       case 'harness': this.ringFx(e.x, e.z, 2.2, 0x7cff9a, 1.6); this.textFx(e.x, 3, e.z, 'ZERO FATALITY', 'heal big'); break;
       case 'recall': if (r) r.recallFx = this.time; break;
+      case 'silenced': if (r && r.id === this.myId) this.textFx(r.px, 3.6, r.pz, 'SILENCE', 'audit'); break;
+      case 'gen': this.genFx(e, r); break;
       case 'recalled': case 'recallx': if (r) r.recallFx = 0; break;
     }
+  }
+
+  // efek visual generik untuk skill berbasis data (15 hero tambahan)
+  genFx(e, r) {
+    const col = new THREE.Color(e.c || '#ffffff'), hex = col.getHex(), cs = e.c || '#ffffff';
+    const flags = new Set(String(e.flags || '').split(','));
+    const big = e.slot === 2;
+    if (e.text && e.shape !== 'circle-warn' && e.shape !== 'line-warn') this.textFx(e.x2 ?? e.x, 3.8, e.z2 ?? e.z, e.text, 'big gen');
+    switch (e.shape) {
+      case 'cone': {
+        const ang = Math.atan2(e.dx, e.dz), n = 9;
+        for (let i = 0; i < n; i++) {
+          const a = ang - e.ang + (i / (n - 1)) * e.ang * 2;
+          this.beamFx(e.x, e.z, e.x + Math.sin(a) * e.r, e.z + Math.cos(a) * e.r, hex, 0.35, 0.35, 1.0);
+        }
+        this.sparks(e.x + e.dx * e.r * 0.6, 1, e.z + e.dz * e.r * 0.6, 26, [cs, '#ffffff'], { speed: 7, up: 2, life: 0.5, size: 0.7, spread: e.r * 0.5 });
+        break;
+      }
+      case 'line-warn': this.beamFx(e.x, e.z, e.x2, e.z2, hex, e.w, e.delay, 0.08); break;
+      case 'line': {
+        this.beamFx(e.x, e.z, e.x2, e.z2, hex, e.w * 0.8, 0.45, 1.1);
+        this.beamFx(e.x, e.z, e.x2, e.z2, 0xffffff, e.w * 0.25, 0.3, 1.15);
+        const L = Math.hypot(e.x2 - e.x, e.z2 - e.z);
+        for (let k = 0; k < L; k += 1.2) this.sparks(e.x + (e.x2 - e.x) * k / L, 0.8, e.z + (e.z2 - e.z) * k / L, 3, [cs, '#ffffff'], { speed: 3, up: 3, life: 0.5, size: 0.6 });
+        if (flags.has('truck')) this.dropFx(e.x2, e.z2, 'truck', e.x, e.z);
+        if (big) this.shake = 0.4;
+        break;
+      }
+      case 'circle-warn': this.warnFx(e.x, e.z, e.r, hex, e.delay); if (flags.has('drop')) this.dropFx(e.x, e.z, e.drop || 'container', null, null, e.delay); break;
+      case 'circle': {
+        this.ringFx(e.x, e.z, e.r, hex, 0.6);
+        this.ringFx(e.x, e.z, e.r, hex, 0.7, { fill: true, opacity: 0.3, from: 0.9 });
+        this.sparks(e.x, 0.6, e.z, 18 + Math.round(e.r * 6), [cs, '#ffffff'], { speed: e.r * 1.6, up: 4, life: 0.7, size: 0.8, spread: e.r * 0.8 });
+        this.burst(e.x, 0.4, e.z, 10 + Math.round(e.r * 3), ['#8a7a66', '#bba68a'], { speed: 4, up: 5, life: 0.8, size: 0.16, spread: e.r, noGlow: true });
+        if (flags.has('bolt')) for (let i = 0; i < 4; i++) this.boltFx([[e.x + rand(-e.r, e.r) * 0.6, 14, e.z + rand(-e.r, e.r) * 0.6], [e.x + rand(-e.r, e.r) * 0.6, 0.3, e.z + rand(-e.r, e.r) * 0.6]], hex, 0.35);
+        if (flags.has('pillar')) this.skillFx({ k: 'pillar', x: e.x, z: e.z, r: e.r });
+        if (flags.has('vortex')) this.vortexFx(e.x, e.z, e.r, hex);
+        if (big || e.r >= 4.5) this.shake = Math.max(this.shake || 0, 0.45);
+        break;
+      }
+      case 'zone': this.zoneFx(e.x, e.z, e.r, hex, e.dur, flags); break;
+      case 'turret': this.turretFx(e.x, e.z, hex, e.dur); break;
+      case 'proj': if (r) this.sparks(r.px + e.dx, 1.4, r.pz + e.dz, 8, [cs, '#ffffff'], { speed: 2, up: 1, life: 0.3, size: 0.6 }); break;
+      case 'dash':
+        this.beamFx(e.x, e.z, e.x2, e.z2, hex, 0.7, 0.45, 1.0);
+        this.sparks(e.x2, 1, e.z2, 16, [cs, '#ffffff'], { speed: 5, up: 3, life: 0.5, size: 0.7 });
+        break;
+      case 'unit': {
+        if (flags.has('tether') || flags.has('hook')) this.beamFx(e.x, e.z, e.x2, e.z2, hex, 0.18, 0.8, 1.3);
+        this.ringFx(e.x2, e.z2, 1.8, hex, 0.6);
+        this.sparks(e.x2, 1.3, e.z2, 22, [cs, '#ffffff'], { speed: 5, up: 4, life: 0.6, size: 0.8 });
+        if (flags.has('slam')) { this.dropFx(e.x2, e.z2, 'hook'); this.shake = 0.5; }
+        break;
+      }
+      case 'buff': {
+        const t = e.id ? this.ents.get(e.id) : null;
+        const x = t ? t.px : e.x, z = t ? t.pz : e.z;
+        this.ringFx(x, z, e.r || 1.6, hex, 0.8, { from: 0.4 });
+        this.sparks(x, 0.4, z, 14, [cs, '#ffffff'], { speed: 1.2, up: 5, life: 0.9, size: 0.55, grav: -1, spread: 1.2 });
+        break;
+      }
+      case 'self': if (r) { this.ringFx(r.px, r.pz, e.r || 3, hex, 0.7); this.sparks(r.px, 1, r.pz, 30, [cs, '#ffffff'], { speed: 6, up: 4, life: 0.7, size: 0.8 }); } break;
+    }
+  }
+
+  zoneFx(x, z, rr, hex, dur, flags) {
+    const m = basic(hex, 0.28), m2 = basicAdd(hex, 0.8);
+    const g = new THREE.Group(); g.position.set(x, 0.06, z);
+    const d = new THREE.Mesh(GEO.disc, m); d.rotation.x = -Math.PI / 2; d.scale.setScalar(rr); g.add(d);
+    const ring = new THREE.Mesh(GEO.ring, m2); ring.rotation.x = -Math.PI / 2; ring.scale.setScalar(rr); g.add(ring);
+    if (flags && flags.has('barricade')) {
+      const bm = mat(0xe2b21c, { unique: true });
+      for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2; const b = box(bm, 0.8, 0.5, 0.15, Math.cos(a) * rr, 0.3, Math.sin(a) * rr); b.rotation.y = -a + Math.PI / 2; g.add(b); }
+    }
+    this.addFx(g, dur, (k) => {
+      ring.rotation.z = this.time * 0.8;
+      m.opacity = 0.28 * (k > 0.85 ? (1 - k) / 0.15 : 1);
+      if (Math.random() < 0.35) this.glow.emit(x + rand(-rr, rr) * 0.7, 0.2, z + rand(-rr, rr) * 0.7, 0, 1.2, 0, 0.8, 0.6, '#' + new THREE.Color(hex).getHexString(), -0.5);
+    }, () => { m.dispose(); m2.dispose(); });
+  }
+
+  turretFx(x, z, hex, dur) {
+    const g = new THREE.Group(); g.position.set(x, 0, z);
+    const st = mat(0x555a60, { metal: 0.7, unique: true }), gl = basicAdd(hex, 1);
+    for (const a of [0, 2.1, 4.2]) g.add(strut(st, [0, 1.2, 0], [Math.sin(a) * 0.6, 0, Math.cos(a) * 0.6], 0.05));
+    g.add(box(st, 0.6, 0.4, 0.6, 0, 1.4, 0));
+    const eye = mesh(GEO.sph, gl, 0.16, 0.16, 0.16, 0, 1.45, 0.32); g.add(eye);
+    const scan = mesh(GEO.ring, basicAdd(hex, 0.35), 8, 8, 8, 0, 0.08, 0); scan.rotation.x = -Math.PI / 2; g.add(scan);
+    this.addFx(g, dur, (k) => { g.rotation.y = this.time * 1.5; scan.material.opacity = 0.2 + Math.sin(this.time * 4) * 0.1; g.scale.setScalar(k < 0.08 ? k / 0.08 : k > 0.95 ? (1 - k) / 0.05 : 1); }, () => { gl.dispose(); scan.material.dispose(); });
+  }
+
+  vortexFx(x, z, rr, hex) {
+    for (let i = 0; i < 60; i++) {
+      const a = Math.random() * Math.PI * 2, d = rr * (0.4 + Math.random() * 0.6);
+      this.glow.emit(x + Math.cos(a) * d, 0.5 + Math.random() * 2, z + Math.sin(a) * d, -Math.cos(a) * d * 1.8 - Math.sin(a) * 6, 1.5, -Math.sin(a) * d * 1.8 + Math.cos(a) * 6, 0.7, 0.8, '#' + new THREE.Color(hex).getHexString(), 0, 0.2);
+    }
+  }
+
+  // benda jatuh / melintas: kontainer, kandang baja, kait, truk molen
+  dropFx(x, z, kind, fromX, fromZ, delay = 0.6) {
+    const g = new THREE.Group();
+    if (kind === 'container') { g.add(box(mat(0xb5562a, { map: this.tex.corr, unique: true }), 6, 2.6, 2.4, 0, 1.3, 0)); }
+    else if (kind === 'cage') { const st = mat(0x8a96a3, { metal: 0.8, unique: true }); for (const [a, b] of [[-2, -2], [2, -2], [2, 2], [-2, 2]]) g.add(box(st, 0.25, 3.2, 0.25, a, 1.6, b)); g.add(box(st, 4.3, 0.25, 4.3, 0, 3.2, 0)); }
+    else if (kind === 'hook') { g.add(mesh(GEO.torus, mat(0x8a96a3, { metal: 0.9, unique: true }), 0.6, 0.6, 0.6, 0, 1, 0)); g.add(box(mat(0xffb030, { unique: true }), 0.7, 0.9, 0.7, 0, 2.2, 0)); }
+    else if (kind === 'truck') {
+      const bm = mat(0xf6c21b, { unique: true }), dm = mat(0x7b7f86, { metal: 0.5, unique: true });
+      g.add(box(bm, 2.4, 1.6, 2.2, 0, 1.2, 2.2)); g.add(box(dm, 2.4, 0.4, 6.4, 0, 0.5, 0));
+      const drum = mesh(GEO.cyl, mat(0xdedede, { metal: 0.4, unique: true }), 1.2, 3.6, 1.2, 0, 1.9, -0.8); drum.rotation.x = Math.PI / 2 - 0.25; g.add(drum);
+      const tx = fromX ?? x, tz = fromZ ?? z;
+      g.rotation.y = Math.atan2(x - tx, z - tz);
+      this.meshFx(g, 0.9, (k) => { g.position.set(tx + (x - tx) * k, 0, tz + (z - tz) * k); if (Math.random() < 0.6) this.burst(g.position.x, 0.3, g.position.z, 2, ['#9a8a70'], { speed: 2, up: 2, life: 0.5, size: 0.2, noGlow: true }); });
+      return;
+    }
+    this.meshFx(g, delay + 0.9, (k) => {
+      const t = k * (delay + 0.9);
+      g.position.set(x, t < delay ? 14 * (1 - t / delay) : 0, z);
+      if (t >= delay && !g.userData.landed) { g.userData.landed = true; this.burst(x, 0.3, z, 30, ['#9a8a70', '#ffffff'], { speed: 7, up: 6, life: 0.8, size: 0.25, noGlow: true }); this.shake = 0.4; }
+      if (t > delay + 0.6) g.scale.setScalar(Math.max(0.01, 1 - (t - delay - 0.6) / 0.3));
+    });
   }
 
   // ------------------------------------------------------------------ per-frame
@@ -1110,12 +1409,20 @@ export class Renderer {
       f.update && f.update(k);
     }
     this.updateParticles(dt);
+    this.glow.update(dt);
+    // jejak cahaya proyektil
+    for (const r of this.ents.values()) {
+      if (r.k !== 'p') continue;
+      const c = PROJ_COL[r.s] || (r.s && r.s.startsWith('g#') ? r.s.slice(1) : '#ffd890');
+      const y = r.obj.position.y;
+      this.glow.emit(r.px + (Math.random() - 0.5) * 0.2, y, r.pz + (Math.random() - 0.5) * 0.2, 0, 0.3, 0, 0.35, r.s === 'water' || r.s === 'signal' ? 1.3 : 0.75, c, 0);
+    }
     // kamera
     const me = this.ents.get(this.myId);
     if (me) this.camTarget.lerp(tmpV.set(me.px, 0, me.pz), Math.min(1, dt * 8));
     else if (this.spectate) this.camTarget.lerp(tmpV.set(this.spectate.x, 0, this.spectate.z), Math.min(1, dt * 2));
-    const dist = (this.portrait ? 34 : 25) * this.zoom;
-    const back = dist * 0.62, up = dist;
+    const dist = (this.portrait ? 34 : this.H < 500 ? 20 : 25) * this.zoom; // layar HP landscape: kamera lebih dekat
+    const back = dist * 0.82, up = dist * 0.9; // sudut ~48°: karakter terlihat dari samping-atas seperti MOBA mobile
     const yaw = this.camYaw;
     let sx = 0, sz = 0;
     if (this.shake > 0) { this.shake -= dt; sx = rand(-0.25, 0.25) * this.shake * 2; sz = rand(-0.25, 0.25) * this.shake * 2; }
@@ -1125,7 +1432,7 @@ export class Renderer {
     const ax = av[0] * 2.5 * sgn, az = av[1] * 2.5 * sgn;
     this.camera.position.set(this.camTarget.x + ax + sx, up, this.camTarget.z + az + sgn * back + sz);
     this.camera.lookAt(this.camTarget.x + ax, 0, this.camTarget.z + az - sgn * 2);
-    this.gl.render(this.scene, this.camera);
+    if (this.composer) this.composer.render(); else this.gl.render(this.scene, this.camera);
     this.updateLabels();
     void input;
   }
@@ -1137,6 +1444,9 @@ export class Renderer {
     if (r.k === 'h') {
       const dead = fl & 64;
       const moving = r.speed > 0.6 && !dead;
+      const air = fl & 2;
+      if (r.anim) this.animateModel(r, dt, fl);
+      else {
       r.phase += dt * (moving ? 11 : 0);
       const sw = moving ? Math.sin(r.phase) * 0.7 : 0;
       U.legL.rotation.x = sw; U.legR.rotation.x = -sw;
@@ -1147,11 +1457,11 @@ export class Renderer {
       if (ct < 0.4) { const s = Math.sin(ct / 0.4 * Math.PI); aR = -2.6 * s; aL = -2.2 * s; }
       U.armR.rotation.x = aR; U.armL.rotation.x = aL;
       // knock-up
-      const air = fl & 2;
       U.body.position.y = air ? 0.9 + Math.sin(now * 8) * 0.15 : 0;
       // mati
       if (dead) { U.body.rotation.x = -Math.min(1.5, (now - (r.deadT || now)) * 5); U.body.position.y = 0.2; }
       else U.body.rotation.x = 0;
+      }
       U.stars.visible = !!(fl & 1) && !air; if (U.stars.visible) U.stars.rotation.y = now * 6;
       U.root.visible = !!(fl & 16);
       U.shield.visible = !!r.d.sh || !!(fl & 128);
@@ -1206,7 +1516,7 @@ export class Renderer {
       if (!r.lbl) continue;
       if (r.hidden) continue;
       const o = r.d;
-      const h = r.k === 'h' ? 3.05 : r.k === 'm' ? (r.s === 'mastiff' ? 2.3 : 1.6) : r.k === 'b' ? (r.s === 'cerberus' ? 5.6 : 5) : r.s === 'water' ? 12 : r.s === 'lightning' ? 13.5 : 10.5;
+      const h = r.k === 'h' ? 3.45 : r.k === 'm' ? (r.s === 'mastiff' ? 2.3 : 1.6) : r.k === 'b' ? (r.s === 'cerberus' ? 5.6 : 5) : r.s === 'water' ? 12 : r.s === 'lightning' ? 13.5 : 10.5;
       const p = this.project(r.px, h, r.pz);
       if (!p.vis || p.x < -80 || p.x > this.W + 80 || p.y < -40 || p.y > this.H + 40) { r.lbl.style.visibility = 'hidden'; continue; }
       r.lbl.style.visibility = '';

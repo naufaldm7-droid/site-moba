@@ -54,6 +54,7 @@ body.dead #gl { filter: grayscale(0.9) brightness(0.75); }
 .float.cad { color: #3fd2ff; }
 .float.audit { color: #ff4a4a; }
 .float.big { font-size: 20px; width: 160px; margin-left: -80px; }
+.float.gen { color: #fff2b0; letter-spacing: 1px; text-shadow: 0 0 10px rgba(255,200,80,.9), 0 2px 2px #000; }
 
 /* ------------------------------------------------ screens */
 .screen { position: fixed; inset: 0; z-index: 20; overflow: auto; touch-action: pan-y; }
@@ -251,3 +252,8 @@ table.sbt tr.me { background: rgba(242,194,48,.08); }
   #feed { top: 92px; }
   .lobby-grid { margin-top: 8px; }
 }
+
+.skins { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+.skin-btn { padding: 7px 6px; border-radius: 8px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.35); font: 700 11px var(--head); text-align: left; }
+.skin-btn.t1 { border-color: #c05aff88; } .skin-btn.t2 { border-color: #d4af37; color: #ffe08a; } .skin-btn.t3 { border-color: #3fe0ff; color: #9ff0ff; }
+.skin-btn.on { background: linear-gradient(180deg, rgba(255,211,77,.3), rgba(0,0,0,.3)); box-shadow: 0 0 0 2px var(--hz); }

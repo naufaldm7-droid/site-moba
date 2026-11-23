@@ -102,7 +102,7 @@ function lobbyState() {
   const host = hostClient();
   return {
     t: 'lobby', state: room.state, size: room.size, online: onlineUrl,
-    players: [...room.clients.values()].filter((c) => c.named).map((c) => ({ id: c.id, name: c.name, team: c.team, hero: c.hero, host: c === host })),
+    players: [...room.clients.values()].filter((c) => c.named).map((c) => ({ id: c.id, name: c.name, team: c.team, hero: c.hero, skin: c.skin, host: c === host })),
   };
 }
 const pushLobby = () => broadcast(lobbyState());
@@ -117,7 +117,7 @@ function startGame() {
       let hero = p.hero && HEROES[p.hero] ? p.hero : null;
       if (!hero || used.has(hero)) hero = PLAYABLE.find((k) => !used.has(k));
       used.add(hero);
-      slots.push({ pid: p.token, name: p.name, team, hero, bot: false });
+      slots.push({ pid: p.token, name: p.name, team, hero, skin: p.skin || 0, bot: false });
     }
     const botNames = ['Bot Pak Mandor', 'Bot Bu Drafter', 'Bot Mas QC', 'Bot Pak Rigger', 'Bot Mbak HSE', 'Bot Bang Surveyor', 'Bot Pak Welder', 'Bot Bu Estimator', 'Bot Mas Rigger', 'Bot Mbak DC'];
     let i = team * 5;
@@ -125,7 +125,7 @@ function startGame() {
       const free = PLAYABLE.filter((k) => !used.has(k));
       const hero = free[Math.floor(Math.random() * free.length)];
       used.add(hero);
-      slots.push({ pid: null, name: botNames[i++ % botNames.length], team, hero, bot: true });
+      slots.push({ pid: null, name: botNames[i++ % botNames.length], team, hero, skin: Math.floor(Math.random() * 4), bot: true });
     }
   }
   room.game = new Game(slots, { mode: modeForSize(room.size) });
@@ -158,7 +158,7 @@ function endGame() {
 // ------------------------------------------------------------------ websocket
 const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
 wss.on('connection', (ws, req) => {
-  const c = { id: nextCid++, name: '', named: false, team: 0, hero: 'structural', token: '', heroId: 0, viewTeam: 2, ip: req.socket.remoteAddress };
+  const c = { id: nextCid++, name: '', named: false, team: 0, hero: 'structural', skin: 0, token: '', heroId: 0, viewTeam: 2, ip: req.socket.remoteAddress };
   room.clients.set(ws, c);
   ws.on('message', (data) => {
     let m;
@@ -174,6 +174,7 @@ wss.on('connection', (ws, req) => {
       const blue = named.filter((o) => o.team === 0).length, red = named.filter((o) => o.team === 1).length;
       c.team = blue <= red ? 0 : 1;
       if (HEROES[m.hero]) c.hero = m.hero;
+      if ([0, 1, 2, 3].includes(m.skin)) c.skin = m.skin;
       send(ws, { t: 'welcome', id: c.id, token: c.token });
       pushLobby();
       if (room.state === 'game' && g) {
@@ -187,6 +188,7 @@ wss.on('connection', (ws, req) => {
     switch (m.t) {
       case 'team': if (room.state === 'lobby' && [0, 1, 2].includes(m.team)) { c.team = m.team; pushLobby(); } break;
       case 'hero': if (room.state === 'lobby' && HEROES[m.hero]) { c.hero = m.hero; pushLobby(); } break;
+      case 'skin': if (room.state === 'lobby' && [0, 1, 2, 3].includes(m.skin)) { c.skin = m.skin; pushLobby(); } break;
       case 'size': if (room.state === 'lobby' && hostClient() === c && [1, 2, 3, 5].includes(m.size)) { room.size = m.size; pushLobby(); } break;
       case 'start': if (room.state === 'lobby' && hostClient() === c) startGame(); break;
       case 'chat': broadcast({ t: 'chat', n: c.name, tm: c.team, msg: String(m.msg || '').slice(0, 120) }); break;
