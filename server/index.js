@@ -275,7 +275,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(line);
   console.log(`  Main di laptop ini : http://localhost:${PORT}`);
   for (const { name, ip } of lanIPs()) console.log(`  HP / PC lain       : http://${ip}:${PORT}   (${name})`);
-  console.log('  Semua perangkat harus di WiFi / hotspot yang sama.');
+  console.log(ONLINE ? '  Link online (di bawah) bisa dibuka dari laptop/HP mana saja lewat internet.' : '  Semua perangkat harus di WiFi / hotspot yang sama (pakai START_ONLINE.bat untuk main lewat internet).');
   console.log('  Jika Windows Firewall bertanya, pilih "Allow" (Private network).');
   console.log('  Tutup jendela ini / Ctrl+C untuk mematikan server.');
   console.log(line);
