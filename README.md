@@ -18,11 +18,14 @@ Manual: `npm install` lalu `npm start`. Ganti port: `set PORT=8080 && npm start`
 
 ## Main tanpa laptop menyala (server cloud gratis, link tetap)
 
-1. Buka https://render.com, daftar dengan akun GitHub (DrafterTCI), izinkan akses ke repo `site-clash-laydown-legends`.
-2. Klik **New + → Blueprint**, pilih repo ini, lalu **Apply**. Render membaca `render.yaml` dan membangun server (±3 menit).
-3. Link tetap muncul di dashboard, mis. `https://site-clash.onrender.com`. Kirim ke teman — buka di laptop/HP mana saja.
-4. Setiap `git push` ke `main` otomatis memperbarui server.
-5. Paket gratis: server "tidur" bila 15 menit tidak ada pemain; pembukaan pertama sesudahnya butuh ±1 menit untuk bangun.
+**Hugging Face Spaces — gratis, tanpa kartu kredit (disarankan)**
+1. Daftar di https://huggingface.co (gratis), buka https://huggingface.co/settings/tokens, buat token jenis **Write**.
+2. Klik dua kali **`DEPLOY_HF.bat`**, tempel token, Enter. Skrip mengunggah game ke Space `<username>/site-clash`.
+3. Tunggu ±5 menit (build), lalu buka link `https://<username>-site-clash.hf.space` — kirim ke teman.
+4. Setiap ada perubahan game, jalankan `DEPLOY_HF.bat` lagi. Space gratis tidur bila 48 jam tidak dibuka; bangun otomatis saat dibuka.
+5. Catatan: agar teman bisa masuk tanpa login, Space harus **Public** (kode & aset game ikut terlihat publik).
+
+**Render (alternatif)** — `render.yaml` sudah siap: render.com → New + → Blueprint → pilih repo. Render kadang meminta kartu kredit untuk verifikasi.
 
 ## Main online lewat laptop sendiri (Cloudflare Tunnel)
 

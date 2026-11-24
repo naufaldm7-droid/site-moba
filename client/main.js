@@ -132,7 +132,7 @@ async function loadJoinUrls() {
     const info = await (await fetch('/api/info', { cache: 'no-store' })).json();
     const online = info.online || (S.lobby && S.lobby.online);
     // pemain yang masuk lewat link online tidak perlu melihat IP lokal
-    const viaTunnel = /trycloudflare\.com$|onrender\.com$/.test(location.hostname);
+    const viaTunnel = /trycloudflare\.com$|onrender\.com$|hf\.space$/.test(location.hostname);
     const urls = viaTunnel ? '' : info.ips.map((i) => `<code>http://${esc(i.ip)}:${info.port}</code>`).join(' ');
     let html = '';
     if (online) html += `🌐 Link online: <code id="online-url">${esc(online)}</code> <button class="btn" id="btn-copy-url" style="padding:3px 8px;font-size:11px">Salin</button>`;

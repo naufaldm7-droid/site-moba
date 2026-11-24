@@ -14,9 +14,10 @@ import { HEROES, PLAYABLE, SNAP_HZ, TICK_HZ, modeForSize } from '../shared/data.
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = +(process.env.PORT || 3000);
 const ONLINE = process.argv.includes('--online');
-// Di cloud (Render) link publik sudah tetap: https://<nama>.onrender.com
-const CLOUD = !!process.env.RENDER_EXTERNAL_URL;
-let onlineUrl = process.env.RENDER_EXTERNAL_URL || '';
+// Di cloud (Render / Hugging Face Spaces) link publik sudah tetap
+const CLOUD_URL = process.env.RENDER_EXTERNAL_URL || (process.env.SPACE_HOST ? `https://${process.env.SPACE_HOST}` : '');
+const CLOUD = !!CLOUD_URL;
+let onlineUrl = CLOUD_URL;
 
 // Mode online: jalankan Cloudflare quick tunnel (tools/bin/cloudflared.exe) -> link https publik untuk teman
 function startTunnel() {
