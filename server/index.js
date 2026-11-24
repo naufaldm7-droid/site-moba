@@ -78,7 +78,9 @@ function lanIPs() {
 }
 
 const server = http.createServer((req, res) => {
-  const url = decodeURIComponent((req.url || '/').split('?')[0]);
+  // Alamat rusak (mis. "/%E0%A4") membuat decodeURIComponent melempar error -> jawab 400, server tetap hidup
+  let url;
+  try { url = decodeURIComponent((req.url || '/').split('?')[0]); } catch { res.writeHead(400); res.end('400'); return; }
   if (url === '/api/info') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({ port: PORT, ips: lanIPs(), online: onlineUrl, state: room.state, players: room.clients.size }));
@@ -188,9 +190,13 @@ const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
 wss.on('connection', (ws, req) => {
   const c = { id: nextCid++, name: '', named: false, team: 0, hero: 'structural', skin: 0, token: '', heroId: 0, viewTeam: 2, ip: req.socket.remoteAddress };
   room.clients.set(ws, c);
+  ws.on('error', () => { /* frame rusak / koneksi putus: ws menutup sendiri, jangan sampai server mati */ });
   ws.on('message', (data) => {
     let m;
     try { m = JSON.parse(data); } catch { return; }
+    try { onMessage(m); } catch (e) { console.error('[ws] pesan diabaikan:', e && e.message); }
+  });
+  function onMessage(m) {
     if (!m || typeof m.t !== 'string') return;
     const g = room.game;
     if (m.t === 'hello') {
@@ -224,7 +230,7 @@ wss.on('connection', (ws, req) => {
       default:
         if (g && c.heroId) g.setInput(g.ents.get(c.heroId), m);
     }
-  });
+  }
   ws.on('close', () => {
     room.clients.delete(ws);
     if (room.game && c.heroId) {
