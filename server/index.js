@@ -14,7 +14,9 @@ import { HEROES, PLAYABLE, SNAP_HZ, TICK_HZ, modeForSize } from '../shared/data.
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = +(process.env.PORT || 3000);
 const ONLINE = process.argv.includes('--online');
-let onlineUrl = '';
+// Di cloud (Render) link publik sudah tetap: https://<nama>.onrender.com
+const CLOUD = !!process.env.RENDER_EXTERNAL_URL;
+let onlineUrl = process.env.RENDER_EXTERNAL_URL || '';
 
 // Mode online: jalankan Cloudflare quick tunnel (tools/bin/cloudflared.exe) -> link https publik untuk teman
 function startTunnel() {
@@ -67,6 +69,7 @@ const ROUTES = [
 
 function lanIPs() {
   const out = [];
+  if (CLOUD) return out;
   for (const [name, list] of Object.entries(os.networkInterfaces())) {
     for (const a of list || []) if (a.family === 'IPv4' && !a.internal) out.push({ name, ip: a.address });
   }

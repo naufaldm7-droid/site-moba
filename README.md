@@ -16,7 +16,15 @@ pemain masuk lewat **browser** di PC atau HP yang terhubung ke WiFi / hotspot ya
 
 Manual: `npm install` lalu `npm start`. Ganti port: `set PORT=8080 && npm start`.
 
-## Main online bersama teman (internet)
+## Main tanpa laptop menyala (server cloud gratis, link tetap)
+
+1. Buka https://render.com, daftar dengan akun GitHub (DrafterTCI), izinkan akses ke repo `site-clash-laydown-legends`.
+2. Klik **New + → Blueprint**, pilih repo ini, lalu **Apply**. Render membaca `render.yaml` dan membangun server (±3 menit).
+3. Link tetap muncul di dashboard, mis. `https://site-clash.onrender.com`. Kirim ke teman — buka di laptop/HP mana saja.
+4. Setiap `git push` ke `main` otomatis memperbarui server.
+5. Paket gratis: server "tidur" bila 15 menit tidak ada pemain; pembukaan pertama sesudahnya butuh ±1 menit untuk bangun.
+
+## Main online lewat laptop sendiri (Cloudflare Tunnel)
 
 1. Klik dua kali **`START_ONLINE.bat`**. Server jalan di laptop ini, lalu Cloudflare Tunnel (gratis, resmi) membuat link publik seperti
    `https://kata-kata-acak.trycloudflare.com`.

@@ -1,0 +1,12 @@
+# Deploy gratis ke Render (https://render.com): New + > Blueprint > pilih repo ini.
+# Server game jalan 24 jam di cloud; link tetap https://site-clash.onrender.com (nama bisa beda bila sudah dipakai).
+services:
+  - type: web
+    name: site-clash
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install --omit=dev --no-audit --no-fund
+    startCommand: node server/index.js
+    healthCheckPath: /api/info
+    autoDeploy: true
